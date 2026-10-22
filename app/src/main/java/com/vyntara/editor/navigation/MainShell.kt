@@ -1,6 +1,7 @@
 package com.vyntara.editor.navigation
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -203,8 +204,9 @@ fun MainShell(
     }
 }
 
+/** Must be RowScope — NavigationBarItem is an extension on RowScope. */
 @Composable
-private fun HubNavItem(
+private fun RowScope.HubNavItem(
     selected: Boolean,
     onClick: () -> Unit,
     icon: ImageVector,
