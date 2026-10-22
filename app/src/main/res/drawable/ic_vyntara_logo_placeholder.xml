@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PLACEHOLDER LOGO FOR DEVELOPMENT ONLY.
+  Replace this file (or the ImageVector / painter resource used in BootLogo)
+  with the official VYNTARA logo asset. Do not treat this geometry as the final brand.
+  Integration point: BootLogo.kt / R.drawable.ic_vyntara_logo_placeholder
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+    <!-- Outer ring -->
+    <path
+        android:pathData="M100,20 A80,80 0 1,1 99.9,20"
+        android:strokeWidth="2.5"
+        android:strokeColor="#7B5CFF"
+        android:fillColor="#00000000" />
+    <!-- Inner geometric core -->
+    <path
+        android:pathData="M100,55 L130,100 L100,145 L70,100 Z"
+        android:strokeWidth="2"
+        android:strokeColor="#00E5FF"
+        android:fillColor="#00000000" />
+    <!-- Center accent -->
+    <path
+        android:pathData="M100,85 A15,15 0 1,1 99.9,85"
+        android:strokeWidth="1.5"
+        android:strokeColor="#FFFFFF"
+        android:fillColor="#00000000" />
+    <!-- Subtle cross lines -->
+    <path
+        android:pathData="M100,40 L100,60 M100,140 L100,160 M40,100 L60,100 M140,100 L160,100"
+        android:strokeWidth="1.2"
+        android:strokeColor="#A78BFA"
+        android:fillColor="#00000000" />
+</vector>

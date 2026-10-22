@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Vyntara</string>
+    <string name="skip_animation">Omitir</string>
+    <string name="status_initializing">Inicializando entorno…</string>
+    <string name="status_checking_codecs">Comprobando capacidades multimedia…</string>
+    <string name="status_checking_gpu">Evaluando motor gráfico…</string>
+    <string name="status_preparing_renderer">Preparando renderizado…</string>
+    <string name="status_configuring">Configurando reproducción…</string>
+    <string name="status_workspace">Preparando espacio de trabajo…</string>
+    <string name="status_ready">Motor creativo listo</string>
+    <string name="tab_home">Inicio</string>
+    <string name="tab_start">Comienza</string>
+    <string name="tab_projects">Proyectos</string>
+    <string name="tab_templates">Plantillas</string>
+    <string name="create_project">Nuevo proyecto</string>
+    <string name="templates_soon">Muy pronto</string>
+</resources>
