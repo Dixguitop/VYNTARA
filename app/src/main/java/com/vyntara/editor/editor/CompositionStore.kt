@@ -65,7 +65,11 @@ class CompositionStore(private val context: Context) {
             val clips = (0 until clipsArr.length()).map { i ->
                 jsonToClip(clipsArr.getJSONObject(i))
             }
+            val marksArr = root.optJSONArray("markers")
+            val marks = if (marksArr == null) emptyList() else
+                (0 until marksArr.length()).map { marksArr.getDouble(it).toFloat() }
             fallback.copy(
+                markers = marks,
                 title = root.optString("title", fallback.title),
                 width = root.optInt("width", fallback.width),
                 height = root.optInt("height", fallback.height),

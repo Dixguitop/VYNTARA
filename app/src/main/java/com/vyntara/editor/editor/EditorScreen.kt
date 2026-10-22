@@ -86,6 +86,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.Image
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -341,7 +342,6 @@ fun EditorScreen(
             containerColor = colors.card
         )
     }
-}
 
     if (showExportDialog) {
         AlertDialog(
@@ -429,7 +429,7 @@ fun EditorScreen(
             containerColor = colors.card
         )
     }
-
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1233,6 +1233,7 @@ private fun InspectorBody(
     }
 }
 
+@Composable
 private fun EffectsBody(doc: EditorDocument, colors: VyntaraColors, lang: AppLanguage, onApply: (String) -> Unit) {
     var cat by remember { mutableStateOf(if (lang == AppLanguage.ENGLISH) "All" else "Todos") }
     var query by remember { mutableStateOf("") }
@@ -1456,7 +1457,7 @@ private fun Scene3DPanel(
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
                         .background(colors.surface)
-                        .clickable { onCameraKeyframe(prop) }
+                        .clickable { onKeyframe3d("cam:$prop") }
                         .padding(horizontal = 6.dp, vertical = 4.dp)
                 )
             }

@@ -90,7 +90,9 @@ data class EditorDocument(
     val timelineZoom: Float = 1f,
     val saveStatus: SaveStatus = SaveStatus.SAVED,
     val canUndo: Boolean = false,
-    val canRedo: Boolean = false
+    val canRedo: Boolean = false,
+    val markers: List<Float> = emptyList(),
+    val soloTrack: Int? = null
 ) {
     val selected: EditorClip? get() = clips.firstOrNull { it.id in selectedIds }
 }

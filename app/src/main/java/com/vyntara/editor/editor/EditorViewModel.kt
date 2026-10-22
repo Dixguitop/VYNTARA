@@ -68,6 +68,15 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private val _lastExportPath = MutableStateFlow<String?>(null)
     val lastExportPath: StateFlow<String?> = _lastExportPath.asStateFlow()
 
+    private val _scene3d = MutableStateFlow(Scene3D.demo())
+    val scene3d: StateFlow<Scene3D> = _scene3d.asStateFlow()
+
+    private val _exportSettings = MutableStateFlow(ExportSettings())
+    val exportSettings: StateFlow<ExportSettings> = _exportSettings.asStateFlow()
+
+    private var autosaveJob: Job? = null
+    @Volatile private var exportCancelled = false
+
     private var previewJob: Job? = null
     private var playJob: Job? = null
 
@@ -218,6 +227,10 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun addKeyframe3d(property: String) {
+        if (property.startsWith("cam:")) {
+            addCameraKeyframe(property.removePrefix("cam:"))
+            return
+        }
         val s = _scene3d.value
         val obj = s.selected ?: run {
             _toast.value = "Select a 3D object"
