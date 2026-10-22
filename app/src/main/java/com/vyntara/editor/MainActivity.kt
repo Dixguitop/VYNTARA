@@ -80,8 +80,9 @@ private fun VyntaraRoot(
     val projects by projectsVm.projects.collectAsStateWithLifecycle()
 
     var destination by remember { mutableStateOf<AppDestination>(AppDestination.Boot) }
-    val storageLabel = remember(projects) {
-        settingsVm.formatBytes(settingsVm.projectsStorageBytes())
+    var storageLabel by remember { mutableStateOf("—") }
+    LaunchedEffect(projects.size) {
+        storageLabel = settingsVm.formatBytes(settingsVm.projectsStorageBytes())
     }
     val lang = AppLanguage.fromCode(settings.languageCode)
 

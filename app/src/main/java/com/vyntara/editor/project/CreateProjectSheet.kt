@@ -6,8 +6,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,9 +16,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -46,7 +51,7 @@ import com.vyntara.editor.settings.AppSettings
 import com.vyntara.editor.ui.theme.LocalAppTheme
 import com.vyntara.editor.ui.theme.VyntaraColors
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateProjectSheet(
     profile: DeviceProfile?,
@@ -60,7 +65,12 @@ fun CreateProjectSheet(
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var title by remember { mutableStateOf("") }
-    var aspect by remember { mutableStateOf(AspectPreset.RATIO_16_9) }
+    var aspect by remember {
+        mutableStateOf(
+            AspectPreset.entries.find { it.label == settings.defaultAspectLabel }
+                ?: AspectPreset.RATIO_16_9
+        )
+    }
     var resolution by remember {
         mutableStateOf(
             ResolutionPreset.entries.find { it.longSide == settings.defaultResolutionLongSide }
@@ -73,6 +83,15 @@ fun CreateProjectSheet(
     var customH by remember { mutableIntStateOf(1080) }
     var customColorHex by remember { mutableStateOf("1A1A2E") }
     var error by remember { mutableStateOf<String?>(null) }
+    var acceptFpsRisk by remember { mutableStateOf(false) }
+
+    var aspectExpanded by remember { mutableStateOf(false) }
+    var resExpanded by remember { mutableStateOf(false) }
+    var fpsExpanded by remember { mutableStateOf(false) }
+    var bgExpanded by remember { mutableStateOf(false) }
+
+    val fpsWarning = CapabilityLimits.fpsBlockReason(fps, profile)
+    val resWarning = CapabilityLimits.resolutionBlockReason(resolution.longSide, profile)
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -80,14 +99,14 @@ fun CreateProjectSheet(
         containerColor = colors.surface
     ) {
         Column(
-            modifier = Modifier
+            Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
-                .padding(bottom = 32.dp)
+                .padding(bottom = 40.dp)
         ) {
-            Text(t("create_title"), color = colors.text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(16.dp))
+            Text(t("create_title"), color = colors.text, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(20.dp))
 
             OutlinedTextField(
                 value = title,
@@ -95,30 +114,44 @@ fun CreateProjectSheet(
                 label = { Text(t("create_name")) },
                 placeholder = { Text(t("create_name_hint")) },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                colors = fieldColors()
+                modifier = Modifier.fillMaxWidth().height(60.dp),
+                colors = fieldColors(),
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, color = colors.text)
             )
 
-            SectionLabel(t("create_aspect"), colors)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Spacer(Modifier.height(16.dp))
+            Text(t("create_aspect"), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(8.dp))
+            DropdownField(
+                value = if (aspect == AspectPreset.CUSTOM) t("aspect_custom") else aspect.label,
+                expanded = aspectExpanded,
+                onExpandedChange = { aspectExpanded = it },
+                colors = colors
+            ) {
                 AspectPreset.entries.forEach { preset ->
-                    Chip(
-                        label = if (preset == AspectPreset.CUSTOM) t("aspect_custom") else preset.label,
-                        selected = aspect == preset,
-                        enabled = true,
-                        onClick = { aspect = preset }
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                if (preset == AspectPreset.CUSTOM) t("aspect_custom") else preset.label,
+                                fontSize = 16.sp
+                            )
+                        },
+                        onClick = {
+                            aspect = preset
+                            aspectExpanded = false
+                        }
                     )
                 }
             }
 
             if (aspect == AspectPreset.CUSTOM) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
                         value = customW.toString(),
                         onValueChange = { customW = it.filter(Char::isDigit).toIntOrNull() ?: customW },
                         label = { Text(t("create_width")) },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).height(60.dp),
                         singleLine = true,
                         colors = fieldColors()
                     )
@@ -126,48 +159,128 @@ fun CreateProjectSheet(
                         value = customH.toString(),
                         onValueChange = { customH = it.filter(Char::isDigit).toIntOrNull() ?: customH },
                         label = { Text(t("create_height")) },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).height(60.dp),
                         singleLine = true,
                         colors = fieldColors()
                     )
                 }
             }
 
-            SectionLabel(t("create_resolution"), colors)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Spacer(Modifier.height(16.dp))
+            Text(t("create_resolution"), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(8.dp))
+            DropdownField(
+                value = resolution.label,
+                expanded = resExpanded,
+                onExpandedChange = { resExpanded = it },
+                colors = colors
+            ) {
                 ResolutionPreset.entries.forEach { preset ->
-                    val blocked = CapabilityLimits.resolutionBlockReason(preset.longSide, profile)
-                    Chip(
-                        label = preset.label,
-                        selected = resolution == preset,
-                        enabled = blocked == null,
+                    val warn = CapabilityLimits.resolutionBlockReason(preset.longSide, profile)
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(preset.label, fontSize = 16.sp)
+                                if (warn != null) {
+                                    Spacer(Modifier.size(8.dp))
+                                    Icon(Icons.Outlined.Warning, null, tint = colors.danger, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        },
                         onClick = {
-                            if (blocked == null) resolution = preset else error = blocked
+                            resolution = preset
+                            resExpanded = false
+                            acceptFpsRisk = false
                         }
                     )
                 }
             }
+            if (resWarning != null) {
+                WarningRow(resWarning, colors)
+            }
 
-            SectionLabel(t("create_fps"), colors)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Spacer(Modifier.height(16.dp))
+            Text(t("create_fps"), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(8.dp))
+            DropdownField(
+                value = "$fps fps",
+                expanded = fpsExpanded,
+                onExpandedChange = { fpsExpanded = it },
+                colors = colors
+            ) {
                 FPS_OPTIONS.forEach { value ->
-                    val blocked = CapabilityLimits.fpsBlockReason(value, profile)
-                    Chip(
-                        label = "$value fps",
-                        selected = fps == value,
-                        enabled = blocked == null,
+                    val warn = CapabilityLimits.fpsBlockReason(value, profile)
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("$value fps", fontSize = 16.sp)
+                                if (warn != null) {
+                                    Spacer(Modifier.size(8.dp))
+                                    Icon(Icons.Outlined.Warning, null, tint = Color(0xFFFBBF24), modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        },
                         onClick = {
-                            if (blocked == null) fps = value else error = blocked
+                            fps = value
+                            fpsExpanded = false
+                            acceptFpsRisk = false
                         }
                     )
                 }
             }
+            if (fpsWarning != null) {
+                WarningRow(
+                    if (lang == com.vyntara.editor.i18n.AppLanguage.ENGLISH)
+                        "Not optimal on this device. App may run slower. You can still use it at your own risk."
+                    else
+                        "No es optimo en este dispositivo. La app puede ir mas lenta. Puedes usarlo bajo tu propio riesgo.",
+                    colors,
+                    allowContinue = true,
+                    accepted = acceptFpsRisk,
+                    onAccept = { acceptFpsRisk = true },
+                    acceptLabel = if (lang == com.vyntara.editor.i18n.AppLanguage.ENGLISH) "I accept the risk" else "Acepto el riesgo"
+                )
+            }
 
-            SectionLabel(t("create_background"), colors)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Spacer(Modifier.height(16.dp))
+            Text(t("create_background"), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(8.dp))
+            val bgLabel = when (background) {
+                BackgroundPreset.BLACK -> t("bg_black")
+                BackgroundPreset.WHITE -> t("bg_white")
+                BackgroundPreset.LIGHT_GRAY -> t("bg_gray")
+                BackgroundPreset.GREEN -> t("bg_green")
+                BackgroundPreset.BLUE -> t("bg_blue")
+                BackgroundPreset.TRANSPARENT -> t("bg_transparent")
+                BackgroundPreset.CUSTOM -> t("bg_custom")
+            }
+            DropdownField(
+                value = bgLabel,
+                expanded = bgExpanded,
+                onExpandedChange = { bgExpanded = it },
+                colors = colors,
+                leading = {
+                    Box(
+                        Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(
+                                when (background) {
+                                    BackgroundPreset.TRANSPARENT -> Color(0xFF2A2A35)
+                                    BackgroundPreset.CUSTOM -> try {
+                                        Color(("FF" + customColorHex.padEnd(6, '0').take(6)).toLong(16))
+                                    } catch (_: Exception) {
+                                        Color.DarkGray
+                                    }
+                                    else -> background.color ?: Color.DarkGray
+                                }
+                            )
+                            .border(1.dp, colors.muted.copy(alpha = 0.4f), CircleShape)
+                    )
+                }
+            ) {
                 BackgroundPreset.entries.forEach { preset ->
-                    val selected = background == preset
-                    val bgLabel = when (preset) {
+                    val label = when (preset) {
                         BackgroundPreset.BLACK -> t("bg_black")
                         BackgroundPreset.WHITE -> t("bg_white")
                         BackgroundPreset.LIGHT_GRAY -> t("bg_gray")
@@ -176,40 +289,28 @@ fun CreateProjectSheet(
                         BackgroundPreset.TRANSPARENT -> t("bg_transparent")
                         BackgroundPreset.CUSTOM -> t("bg_custom")
                     }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    when (preset) {
-                                        BackgroundPreset.TRANSPARENT -> Color(0xFF2A2A35)
-                                        BackgroundPreset.CUSTOM -> try {
-                                            Color(("FF" + customColorHex.padEnd(6, '0').take(6)).toLong(16))
-                                        } catch (_: Exception) {
-                                            Color.DarkGray
-                                        }
-                                        else -> preset.color ?: Color.DarkGray
-                                    }
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(preset.color ?: Color(0xFF2A2A35))
                                 )
-                                .border(
-                                    width = if (selected) 2.dp else 1.dp,
-                                    color = if (selected) colors.secondary else colors.muted.copy(alpha = 0.4f),
-                                    shape = CircleShape
-                                )
-                                .clickable { background = preset },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (preset == BackgroundPreset.TRANSPARENT) {
-                                Text("∅", color = colors.muted, fontSize = 14.sp)
+                                Spacer(Modifier.size(10.dp))
+                                Text(label, fontSize = 16.sp)
                             }
+                        },
+                        onClick = {
+                            background = preset
+                            bgExpanded = false
                         }
-                        Text(bgLabel, color = colors.muted, fontSize = 10.sp)
-                    }
+                    )
                 }
             }
             if (background == BackgroundPreset.CUSTOM) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = customColorHex,
                     onValueChange = {
@@ -218,27 +319,31 @@ fun CreateProjectSheet(
                     label = { Text(t("create_color_hex")) },
                     prefix = { Text("#", color = colors.muted) },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().height(60.dp),
                     colors = fieldColors()
                 )
             }
 
             error?.let {
-                Spacer(Modifier.height(8.dp))
-                Text(it, color = colors.danger, fontSize = 13.sp)
+                Spacer(Modifier.height(12.dp))
+                Text(it, color = colors.danger, fontSize = 14.sp)
             }
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(24.dp))
             Button(
                 onClick = {
                     val longSide = if (aspect == AspectPreset.CUSTOM) maxOf(customW, customH) else resolution.longSide
-                    val resReason = CapabilityLimits.resolutionBlockReason(longSide, profile)
-                    val fpsReason = CapabilityLimits.fpsBlockReason(fps, profile)
+                    val hardResBlock = longSide > 2160 || longSide < 16
                     when {
-                        resReason != null -> error = resReason
-                        fpsReason != null -> error = fpsReason
+                        hardResBlock -> error = "16–2160"
+                        fpsWarning != null && !acceptFpsRisk -> {
+                            error = if (lang == com.vyntara.editor.i18n.AppLanguage.ENGLISH)
+                                "Confirm that you accept the FPS risk"
+                            else
+                                "Confirma que aceptas el riesgo de FPS"
+                        }
                         aspect == AspectPreset.CUSTOM && (customW < 16 || customH < 16) ->
-                            error = "16×16 min"
+                            error = "16x16 min"
                         else -> {
                             val (w, h) = if (aspect == AspectPreset.CUSTOM) customW to customH
                             else aspect.computeSize(resolution.longSide)
@@ -261,58 +366,84 @@ fun CreateProjectSheet(
                         }
                     }
                 },
-                modifier = Modifier.fillMaxWidth().height(52.dp),
+                modifier = Modifier.fillMaxWidth().height(56.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = colors.primary)
             ) {
-                Text(t("create_action"), fontWeight = FontWeight.SemiBold)
+                Text(t("create_action"), fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SectionLabel(text: String, colors: VyntaraColors) {
-    Text(
-        text = text,
-        color = colors.muted,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.Medium,
-        modifier = Modifier.padding(top = 18.dp, bottom = 8.dp)
-    )
+private fun DropdownField(
+    value: String,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    colors: VyntaraColors,
+    leading: (@Composable () -> Unit)? = null,
+    menu: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
+) {
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = onExpandedChange) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = {},
+            readOnly = true,
+            leadingIcon = leading,
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor()
+                .height(56.dp),
+            colors = fieldColors(),
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, color = colors.text)
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) },
+            modifier = Modifier.background(colors.card)
+        ) {
+            menu()
+        }
+    }
 }
 
 @Composable
-private fun Chip(
-    label: String,
-    selected: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit
+private fun WarningRow(
+    message: String,
+    colors: VyntaraColors,
+    allowContinue: Boolean = false,
+    accepted: Boolean = false,
+    onAccept: () -> Unit = {},
+    acceptLabel: String = ""
 ) {
-    val colors = LocalAppTheme.current.colors
-    val bg = when {
-        !enabled -> colors.card.copy(alpha = 0.5f)
-        selected -> colors.primary.copy(alpha = 0.35f)
-        else -> colors.card
-    }
-    val border = when {
-        selected -> colors.primary
-        !enabled -> colors.muted.copy(alpha = 0.2f)
-        else -> colors.muted.copy(alpha = 0.35f)
-    }
     Column(
-        modifier = Modifier
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
             .clip(RoundedCornerShape(10.dp))
-            .background(bg)
-            .border(1.dp, border, RoundedCornerShape(10.dp))
-            .clickable(enabled = true, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .background(colors.card)
+            .padding(12.dp)
     ) {
-        Text(
-            text = if (!enabled) "🔒 $label" else label,
-            color = if (enabled) colors.text else colors.muted,
-            fontSize = 13.sp
-        )
+        Row(verticalAlignment = Alignment.Top) {
+            Icon(Icons.Outlined.Warning, null, tint = Color(0xFFFBBF24), modifier = Modifier.size(20.dp))
+            Spacer(Modifier.size(8.dp))
+            Text(message, color = colors.muted, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        }
+        if (allowContinue) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = if (accepted) acceptLabel else acceptLabel,
+                color = if (accepted) colors.success else colors.primary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .clickable(onClick = onAccept)
+                    .padding(vertical = 8.dp)
+            )
+        }
     }
 }
 
