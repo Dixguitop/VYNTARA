@@ -13,7 +13,22 @@ android {
         minSdk = 26
         targetSdk = 34
         versionCode = 1
-        versionName = "0.2"
+        versionName = "1.4"
+        // Base name used by some AGP versions for intermediate artifacts
+        setProperty("archivesBaseName", "Vyntara")
+    }
+
+    buildTypes {
+        debug {
+            isMinifyEnabled = false
+        }
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
     }
 
     buildFeatures {
@@ -36,6 +51,14 @@ android {
     }
 }
 
+// APK output name: Vyntara.apk (debug y release)
+android.applicationVariants.configureEach {
+    outputs.configureEach {
+        val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+        output.outputFileName = "Vyntara.apk"
+    }
+}
+
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.09.00"))
     implementation("androidx.activity:activity-compose:1.9.2")
@@ -52,7 +75,6 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
-    // Real A/V playback with sync
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-common:1.4.1")
 }

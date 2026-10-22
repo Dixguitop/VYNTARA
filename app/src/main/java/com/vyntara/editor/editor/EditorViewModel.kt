@@ -7,12 +7,21 @@ import android.os.Environment
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.vyntara.editor.editor.effects.EffectCatalog
+import com.vyntara.editor.editor.scene3d.Object3D
+import com.vyntara.editor.editor.scene3d.Object3DType
+import com.vyntara.editor.editor.scene3d.Scene3D
+import com.vyntara.editor.editor.scene3d.Scene3DStore
+import com.vyntara.editor.editor.scene3d.GltfLoader
+import com.vyntara.editor.editor.scene3d.Vec3
 import com.vyntara.editor.editor.effects.EffectStatus
 import com.vyntara.editor.editor.media.EffectRenderer
+import com.vyntara.editor.editor.media.TextRenderer
+import com.vyntara.editor.editor.media.SolidRenderer
 import com.vyntara.editor.editor.media.ExportPipeline
 import com.vyntara.editor.editor.media.ExportProgress
 import com.vyntara.editor.editor.media.MediaProbe
 import com.vyntara.editor.editor.media.PlaybackEngine
+import com.vyntara.editor.editor.media.AudioLane
 import com.vyntara.editor.project.ProjectSummary
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -30,6 +39,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     private val undoStack = ArrayDeque<EditorDocument>(32)
     private val redoStack = ArrayDeque<EditorDocument>(32)
     private val playback = PlaybackEngine(app)
+    private val compositionStore = CompositionStore(app)
 
     private val _doc = MutableStateFlow(
         EditorDocument(
@@ -91,6 +101,231 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         _previewBitmap.value = null
         _exportProgress.value = null
         _lastExportPath.value = null
+        // Restore saved composition if present
+        val restored = compositionStore.load(project.id, _doc.value)
+        _doc.value = restored.copy(canUndo = false, canRedo = false)
+        val sceneJson = compositionStore.loadSceneJson(project.id)
+        _scene3d.value = if (sceneJson != null) {
+            try {
+                Scene3DStore.fromJson(org.json.JSONObject(sceneJson))
+            } catch (_: Exception) {
+                Scene3D.demo()
+            }
+        } else Scene3D.demo()
+        _exportSettings.value = ExportSettings(
+            width = restored.width,
+            height = restored.height,
+            fps = restored.fps,
+            includeAudio = true
+        )
+        refreshPreview()
+    }
+
+    fun saveComposition() {
+        val doc = document.value
+        _doc.update { it.copy(saveStatus = SaveStatus.SAVING) }
+        val ok = compositionStore.save(doc.copy(saveStatus = SaveStatus.SAVED))
+        val sceneOk = compositionStore.saveScene(
+            doc.projectId,
+            Scene3DStore.toJson(_scene3d.value).toString()
+        )
+        _doc.update {
+            it.copy(saveStatus = if (ok && sceneOk) SaveStatus.SAVED else SaveStatus.ERROR)
+        }
+        _toast.value = if (ok && sceneOk) "Project saved" else "Save failed"
+    }
+
+    fun scheduleAutosave() {
+        autosaveJob?.cancel()
+        autosaveJob = viewModelScope.launch {
+            delay(1500)
+            if (document.value.saveStatus == SaveStatus.DIRTY) {
+                saveComposition()
+            }
+        }
+    }
+
+    fun updateExportSettings(settings: ExportSettings) {
+        _exportSettings.value = settings
+    }
+
+    fun duplicateSelected() {
+        val clip = document.value.selected ?: return
+        if (clip.locked) {
+            _toast.value = "Locked clip"
+            return
+        }
+        val copy = clip.copy(
+            id = java.util.UUID.randomUUID().toString().take(8),
+            name = clip.name + " copy",
+            startSec = clip.endSec,
+            trackIndex = clip.trackIndex
+        )
+        dispatch(EditorAction.AddClip(copy))
+    }
+
+    fun updateScene3d(scene: Scene3D) {
+        _scene3d.value = scene
+        _doc.update { it.copy(saveStatus = SaveStatus.DIRTY) }
+        scheduleAutosave()
+    }
+
+    fun importGltf(uri: android.net.Uri) {
+        viewModelScope.launch {
+            val result = GltfLoader.loadJson(getApplication(), uri)
+            if (result.objects.isEmpty()) {
+                _toast.value = result.warnings.firstOrNull() ?: "No mesh in glTF"
+                return@launch
+            }
+            val s = _scene3d.value
+            _scene3d.value = s.copy(
+                objects = s.objects + result.objects,
+                importedMeshes = s.importedMeshes + result.meshes,
+                selectedId = result.objects.firstOrNull()?.id
+            )
+            _doc.update { it.copy(saveStatus = SaveStatus.DIRTY) }
+            scheduleAutosave()
+            val w = if (result.warnings.isNotEmpty()) " (${result.warnings.size} warnings)" else ""
+            _toast.value = "glTF: ${result.objects.size} objects$w"
+        }
+    }
+
+    fun parentSelectedToNull() {
+        val s = _scene3d.value
+        val sel = s.selected ?: return
+        val nullObj = Object3D(name = "Null_${sel.name}", type = Object3DType.NULL, position = sel.position)
+        val child = sel.copy(parentId = nullObj.id)
+        _scene3d.value = s.copy(
+            objects = s.objects.map { if (it.id == sel.id) child else it } + nullObj,
+            selectedId = nullObj.id
+        )
+        _doc.update { it.copy(saveStatus = SaveStatus.DIRTY) }
+        scheduleAutosave()
+        _toast.value = "Parent null created"
+    }
+
+    fun addParticleEmitter() {
+        val em = Object3D(
+            name = "Particles",
+            type = Object3DType.PARTICLES,
+            position = Vec3(0f, 0.2f, 0f),
+            particles = com.vyntara.editor.editor.scene3d.ParticleEmitter()
+        )
+        val s = _scene3d.value
+        _scene3d.value = s.copy(objects = s.objects + em, selectedId = em.id)
+        _doc.update { it.copy(saveStatus = SaveStatus.DIRTY) }
+        scheduleAutosave()
+    }
+
+    fun addKeyframe3d(property: String) {
+        val s = _scene3d.value
+        val obj = s.selected ?: run {
+            _toast.value = "Select a 3D object"
+            return
+        }
+        val t = document.value.playheadSec
+        val base = when (property) {
+            "posX" -> obj.position.x
+            "posY" -> obj.position.y
+            "posZ" -> obj.position.z
+            "rotY" -> obj.rotation.y
+            "scaleX" -> obj.scale.x
+            else -> 0f
+        }
+        val existing = obj.keyframes[property].orEmpty().filter { kotlin.math.abs(it.timeSec - t) > 0.01f }
+        val keys = (existing + Keyframe(t, base)).sortedBy { it.timeSec }
+        val updated = obj.copy(keyframes = obj.keyframes + (property to keys))
+        _scene3d.value = s.copy(objects = s.objects.map { if (it.id == obj.id) updated else it })
+        _doc.update { it.copy(saveStatus = SaveStatus.DIRTY) }
+        scheduleAutosave()
+        _toast.value = "3D KF $property @ ${"%.2f".format(t)}s"
+    }
+
+    fun setViewportQuality(q: Int) {
+        _scene3d.value = _scene3d.value.copy(viewportQuality = q.coerceIn(0, 2))
+    }
+
+    fun addObject3d(type: Object3DType) {
+        val name = type.name.lowercase().replaceFirstChar { it.uppercase() }
+        val obj = Object3D(
+            name = name,
+            type = type,
+            position = Vec3(0f, if (type == Object3DType.PLANE) 0f else 0.5f, 0f)
+        )
+        val s = _scene3d.value
+        _scene3d.value = s.copy(objects = s.objects + obj, selectedId = obj.id)
+        _doc.update { it.copy(saveStatus = SaveStatus.DIRTY) }
+    }
+
+    fun addSolidClip(colorArgb: Int = 0xFFE11D48.toInt()) {
+        val track = (document.value.clips.maxOfOrNull { it.trackIndex } ?: 0) + 1
+        val clip = EditorClip(
+            id = java.util.UUID.randomUUID().toString().take(8),
+            name = "Solid",
+            type = LayerType.SOLID,
+            trackIndex = track,
+            startSec = document.value.playheadSec,
+            durationSec = 3f,
+            textColorArgb = colorArgb,
+            scaleX = 0.4f,
+            scaleY = 0.25f,
+            posX = 0.5f,
+            posY = 0.5f
+        )
+        dispatch(EditorAction.AddClip(clip))
+        _toast.value = "Solid layer"
+    }
+
+    fun addCameraKeyframe(property: String) {
+        val s = _scene3d.value
+        val tSec = document.value.playheadSec
+        val base = when (property) {
+            "yaw" -> s.cameraYaw
+            "pitch" -> s.cameraPitch
+            "distance" -> s.cameraDistance
+            else -> 0f
+        }
+        val existing = s.cameraKeyframes[property].orEmpty().filter { kotlin.math.abs(it.timeSec - tSec) > 0.01f }
+        val keys = (existing + Keyframe(tSec, base)).sortedBy { it.timeSec }
+        _scene3d.value = s.copy(cameraKeyframes = s.cameraKeyframes + (property to keys))
+        _doc.update { it.copy(saveStatus = SaveStatus.DIRTY) }
+        scheduleAutosave()
+        _toast.value = "Cam KF $property @ ${"%.2f".format(tSec)}s"
+    }
+
+    fun addTextClip() {
+        val track = (document.value.clips.maxOfOrNull { it.trackIndex } ?: 0) + 1
+        val clip = EditorClip(
+            id = java.util.UUID.randomUUID().toString().take(8),
+            name = "Text",
+            type = LayerType.TEXT,
+            trackIndex = track,
+            startSec = document.value.playheadSec,
+            durationSec = 3f
+        )
+        dispatch(EditorAction.AddClip(clip))
+        _toast.value = "Text layer added"
+    }
+
+    fun addKeyframe(property: String) {
+        val clip = document.value.selected ?: run {
+            _toast.value = "Select a clip first"
+            return
+        }
+        val t = document.value.playheadSec
+        val base = when (property) {
+            "opacity" -> clip.opacity
+            "posX" -> clip.posX
+            "posY" -> clip.posY
+            "scaleX" -> clip.scaleX
+            "scaleY" -> clip.scaleY
+            "rotation" -> clip.rotation
+            else -> 0f
+        }
+        val existing = clip.keyframes[property].orEmpty().filter { kotlin.math.abs(it.timeSec - t) > 0.01f }
+        val keys = (existing + Keyframe(t, base, Ease.LINEAR)).sortedBy { it.timeSec }
+        dispatch(EditorAction.UpdateClip(clip.copy(keyframes = clip.keyframes + (property to keys))))
+        _toast.value = "Keyframe $property @ ${"%.2f".format(t)}s"
     }
 
     fun importUri(uri: Uri) {
@@ -164,17 +399,61 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 .filter { doc.playheadSec >= it.startSec && doc.playheadSec < it.endSec }
                 .maxByOrNull { it.trackIndex }
             if (active?.mediaUri == null) {
-                _previewBitmap.value = null
+                val overlays = doc.clips.filter {
+                    it.visible && (it.type == LayerType.TEXT || it.type == LayerType.SOLID) &&
+                        doc.playheadSec >= it.startSec && doc.playheadSec < it.endSec
+                }.sortedBy { it.trackIndex }
+                if (overlays.isEmpty()) {
+                    _previewBitmap.value = null
+                    return@launch
+                }
+                val w = 720
+                val h = (720f * doc.height / doc.width).toInt().coerceAtLeast(64)
+                val base = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(base)
+                canvas.drawColor((doc.backgroundArgb and 0xFFFFFFFFL).toInt())
+                overlays.forEach { raw ->
+                    val c = KeyframeEval.resolveClip(raw, doc.playheadSec)
+                    val lb = if (c.type == LayerType.SOLID)
+                        SolidRenderer.render(c, w, h)
+                    else
+                        TextRenderer.render(c, w, h)
+                    canvas.drawBitmap(lb, 0f, 0f, null)
+                    lb.recycle()
+                }
+                _previewBitmap.value = base
                 return@launch
             }
-            val localTimeMs = ((doc.playheadSec - active.startSec) * 1000f).toLong().coerceAtLeast(0)
+            val spd = active.speed.coerceIn(0.25f, 4f)
+            val localTimeMs = (((doc.playheadSec - active.startSec) * spd) * 1000f).toLong().coerceAtLeast(0)
+            val resolved = KeyframeEval.resolveClip(active, doc.playheadSec)
             var bmp = MediaProbe.decodePreviewFrame(
                 getApplication(),
-                Uri.parse(active.mediaUri),
+                Uri.parse(resolved.mediaUri ?: active.mediaUri!!),
                 localTimeMs,
                 maxSide = 720
             ) ?: return@launch
-            bmp = EffectRenderer.apply(bmp, active)
+            bmp = EffectRenderer.apply(bmp, resolved)
+            // Overlay solid + text layers (higher track on top handled by list order)
+            val overlays = doc.clips.filter {
+                it.visible && (it.type == LayerType.TEXT || it.type == LayerType.SOLID) &&
+                    doc.playheadSec >= it.startSec && doc.playheadSec < it.endSec
+            }.sortedBy { it.trackIndex }
+            if (overlays.isNotEmpty()) {
+                val mutable = bmp.copy(android.graphics.Bitmap.Config.ARGB_8888, true)
+                val canvas = android.graphics.Canvas(mutable)
+                overlays.forEach { raw ->
+                    val c = KeyframeEval.resolveClip(raw, doc.playheadSec)
+                    val layerBmp = if (c.type == LayerType.SOLID)
+                        SolidRenderer.render(c, mutable.width, mutable.height)
+                    else
+                        TextRenderer.render(c, mutable.width, mutable.height)
+                    canvas.drawBitmap(layerBmp, 0f, 0f, null)
+                    layerBmp.recycle()
+                }
+                if (bmp != mutable) bmp.recycle()
+                bmp = mutable
+            }
             _previewBitmap.value = bmp
         }
     }
@@ -224,54 +503,68 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun startPlayback() {
         val doc = document.value
-        val clip = primaryMediaClip(doc)
         playJob?.cancel()
         _doc.update { it.copy(isPlaying = true) }
 
-        if (clip?.mediaUri != null && (clip.type == LayerType.VIDEO || clip.type == LayerType.AUDIO)) {
-            // Fluid player path with A/V sync
-            val localMs = ((doc.playheadSec - clip.startSec) * 1000f).toLong().coerceAtLeast(0)
-            playback.setMedia(clip.mediaUri, autoPlay = true)
-            playback.seekToMs(localMs)
-            playJob = viewModelScope.launch {
-                while (isActive && document.value.isPlaying) {
+        val videoClip = doc.clips
+            .filter { it.visible && it.mediaUri != null && it.type == LayerType.VIDEO }
+            .filter { doc.playheadSec >= it.startSec && doc.playheadSec < it.endSec }
+            .maxByOrNull { it.trackIndex }
+
+        if (videoClip?.mediaUri != null) {
+            val localMs = ((doc.playheadSec - videoClip.startSec) * 1000f).toLong().coerceAtLeast(0)
+            playback.setVideo(videoClip.mediaUri, autoPlay = true)
+            playback.seekVideoMs(localMs)
+        } else {
+            playback.setVideo(null, false)
+        }
+
+        playJob = viewModelScope.launch {
+            while (isActive && document.value.isPlaying) {
+                val d = document.value
+                val tSec = d.playheadSec
+                val lanes = d.clips.filter {
+                    it.visible && !it.muted && it.mediaUri != null &&
+                        (it.type == LayerType.AUDIO || it.type == LayerType.VIDEO) &&
+                        tSec >= it.startSec && tSec < it.endSec &&
+                        (d.soloTrack == null || it.trackIndex == d.soloTrack)
+                }.map {
+                    AudioLane(it.id, it.mediaUri!!, it.volume.coerceIn(0f, 1f))
+                }
+                val seeks = lanes.associate { lane ->
+                    val clip = d.clips.first { it.id == lane.clipId }
+                    lane.clipId to ((tSec - clip.startSec) * 1000f).toLong().coerceAtLeast(0)
+                }
+                playback.syncAudioLanes(lanes, seeks, playing = true)
+
+                if (videoClip?.mediaUri != null) {
                     playback.pollPosition()
                     val pos = playback.positionMs.value / 1000f
-                    val timelinePos = (clip.startSec + pos).coerceIn(0f, document.value.durationSec)
+                    val timelinePos = (videoClip.startSec + pos).coerceIn(0f, d.durationSec)
                     _doc.update { it.copy(playheadSec = timelinePos) }
-                    // Still frame with effects ~5 fps while playing (player shows smooth video separately if surface used)
-                    if (System.currentTimeMillis() % 200 < 50) refreshPreview()
-                    if (timelinePos >= clip.endSec - 0.04f) {
-                        if (document.value.loop) {
-                            playback.seekToMs(0)
-                            _doc.update { it.copy(playheadSec = clip.startSec) }
+                    if (timelinePos >= videoClip.endSec - 0.04f) {
+                        if (d.loop) {
+                            playback.seekVideoMs(0)
+                            _doc.update { it.copy(playheadSec = videoClip.startSec) }
                         } else {
                             stopPlayback()
                             break
                         }
                     }
-                    delay(16)
-                }
-            }
-        } else {
-            // Image / no media: clock only + frame refresh
-            playJob = viewModelScope.launch {
-                while (isActive && document.value.isPlaying) {
-                    delay(33)
-                    val next = document.value.playheadSec + 0.033f
-                    if (next >= document.value.durationSec) {
-                        if (document.value.loop) {
-                            _doc.update { it.copy(playheadSec = 0f) }
-                        } else {
-                            _doc.update { it.copy(playheadSec = document.value.durationSec, isPlaying = false) }
+                } else {
+                    val next = tSec + 0.033f
+                    if (next >= d.durationSec) {
+                        if (d.loop) _doc.update { it.copy(playheadSec = 0f) }
+                        else {
+                            _doc.update { it.copy(playheadSec = d.durationSec, isPlaying = false) }
                             break
                         }
-                    } else {
-                        _doc.update { it.copy(playheadSec = next) }
-                    }
-                    refreshPreview()
+                    } else _doc.update { it.copy(playheadSec = next) }
                 }
+                if (System.currentTimeMillis() % 200 < 40) refreshPreview()
+                delay(16)
             }
+            playback.syncAudioLanes(emptyList(), emptyMap(), playing = false)
         }
     }
 
@@ -279,7 +572,12 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         playJob?.cancel()
         playJob = null
         playback.pause()
+        playback.syncAudioLanes(emptyList(), emptyMap(), playing = false)
         _doc.update { it.copy(isPlaying = false) }
+    }
+
+    fun cancelExport() {
+        exportCancelled = true
     }
 
     fun export() {
@@ -297,9 +595,20 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             if (!movies.exists()) movies.mkdirs()
             val out = File(movies, "vyntara_${doc.projectId}_${System.currentTimeMillis()}.mp4")
             _exportProgress.value = ExportProgress(0, 1, "Starting…")
-            val result = ExportPipeline.export(getApplication(), doc, out) { p ->
-                _exportProgress.value = p
-            }
+            val es = _exportSettings.value
+            exportCancelled = false
+            val result = ExportPipeline.export(
+                getApplication(),
+                doc,
+                out,
+                onProgress = { p -> _exportProgress.value = p },
+                settingsWidth = es.width,
+                settingsHeight = es.height,
+                settingsFps = es.fps,
+                includeAudio = es.includeAudio,
+                scene3d = _scene3d.value,
+                isCancelled = { exportCancelled }
+            )
             result.onSuccess { file ->
                 _lastExportPath.value = file.absolutePath
                 _exportProgress.value = ExportProgress(1, 1, "Saved")
@@ -333,8 +642,8 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 val clip = primaryMediaClip()
                 if (clip?.mediaUri != null && !document.value.isPlaying) {
                     val localMs = ((action.sec - clip.startSec) * 1000f).toLong().coerceAtLeast(0)
-                    playback.setMedia(clip.mediaUri, autoPlay = false)
-                    playback.seekToMs(localMs)
+                    playback.setVideo(clip.mediaUri, autoPlay = false)
+                    playback.seekVideoMs(localMs)
                 }
                 return
             }
@@ -370,7 +679,31 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                 return
             }
             is EditorAction.MarkSaved -> {
-                _doc.update { it.copy(saveStatus = SaveStatus.SAVED) }
+                saveComposition()
+                return
+            }
+            is EditorAction.DuplicateSelected -> {
+                duplicateSelected()
+                return
+            }
+            is EditorAction.AddMarker -> {
+                val t = action.timeSec.coerceIn(0f, document.value.durationSec)
+                _doc.update {
+                    it.copy(
+                        markers = (it.markers + t).distinct().sorted(),
+                        saveStatus = SaveStatus.DIRTY
+                    )
+                }
+                scheduleAutosave()
+                return
+            }
+            is EditorAction.ClearMarkers -> {
+                _doc.update { it.copy(markers = emptyList(), saveStatus = SaveStatus.DIRTY) }
+                scheduleAutosave()
+                return
+            }
+            is EditorAction.SetSoloTrack -> {
+                _doc.update { it.copy(soloTrack = action.track, saveStatus = SaveStatus.DIRTY) }
                 return
             }
             else -> {}
@@ -383,6 +716,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             if (undoStack.size > 30) undoStack.removeFirst()
             redoStack.clear()
             publish(after.copy(saveStatus = SaveStatus.DIRTY))
+            scheduleAutosave()
         }
     }
 

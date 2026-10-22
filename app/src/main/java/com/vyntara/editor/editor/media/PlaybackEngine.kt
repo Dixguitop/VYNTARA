@@ -10,16 +10,22 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+data class AudioLane(
+    val clipId: String,
+    val uri: String,
+    val volume: Float
+)
+
 /**
- * Fluid playback with audio/video sync via Media3 ExoPlayer.
- * One primary media URI at a time (active video/audio clip).
- * Timeline playhead is driven by player position when playing.
+ * Primary video player + parallel audio lanes (ExoPlayer per unmuted audio/video-with-audio clip).
+ * Timeline clock drives seeks; volumes applied per lane.
  */
 class PlaybackEngine(context: Context) {
 
     private val appContext = context.applicationContext
-    private var player: ExoPlayer? = null
-    private var currentUri: String? = null
+    private var videoPlayer: ExoPlayer? = null
+    private val audioPlayers = mutableMapOf<String, ExoPlayer>()
+    private var currentVideoUri: String? = null
 
     private val _positionMs = MutableStateFlow(0L)
     val positionMs: StateFlow<Long> = _positionMs.asStateFlow()
@@ -27,83 +33,97 @@ class PlaybackEngine(context: Context) {
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
-    private val _ready = MutableStateFlow(false)
-    val ready: StateFlow<Boolean> = _ready.asStateFlow()
-
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(playing: Boolean) {
             _isPlaying.value = playing
         }
-
-        override fun onPlaybackStateChanged(playbackState: Int) {
-            _ready.value = playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING
-        }
     }
 
-    private fun ensurePlayer(): ExoPlayer {
-        val existing = player
-        if (existing != null) return existing
-        val p = ExoPlayer.Builder(appContext).build().also {
+    private fun ensureVideo(): ExoPlayer {
+        videoPlayer?.let { return it }
+        return ExoPlayer.Builder(appContext).build().also {
             it.addListener(listener)
             it.repeatMode = Player.REPEAT_MODE_OFF
+            videoPlayer = it
         }
-        player = p
-        return p
     }
 
-    fun setMedia(uri: String?, autoPlay: Boolean = false) {
+    fun setVideo(uri: String?, autoPlay: Boolean) {
         if (uri == null) {
-            player?.stop()
-            player?.clearMediaItems()
-            currentUri = null
-            _ready.value = false
+            videoPlayer?.stop()
+            videoPlayer?.clearMediaItems()
+            currentVideoUri = null
             return
         }
-        if (uri == currentUri && player != null) {
-            if (autoPlay) player?.play()
+        if (uri == currentVideoUri && videoPlayer != null) {
+            if (autoPlay) videoPlayer?.play() else videoPlayer?.pause()
             return
         }
-        currentUri = uri
-        val p = ensurePlayer()
+        currentVideoUri = uri
+        val p = ensureVideo()
         p.setMediaItem(MediaItem.fromUri(Uri.parse(uri)))
         p.prepare()
         p.playWhenReady = autoPlay
     }
 
+    fun syncAudioLanes(lanes: List<AudioLane>, localTimeMsByClip: Map<String, Long>, playing: Boolean) {
+        val wanted = lanes.map { it.clipId }.toSet()
+        // Release obsolete
+        audioPlayers.keys.filter { it !in wanted }.toList().forEach { id ->
+            audioPlayers.remove(id)?.let {
+                it.stop()
+                it.release()
+            }
+        }
+        for (lane in lanes) {
+            val p = audioPlayers.getOrPut(lane.clipId) {
+                ExoPlayer.Builder(appContext).build().also { player ->
+                    player.setMediaItem(MediaItem.fromUri(Uri.parse(lane.uri)))
+                    player.prepare()
+                }
+            }
+            p.volume = lane.volume.coerceIn(0f, 1f)
+            val seek = localTimeMsByClip[lane.clipId] ?: 0L
+            if (kotlin.math.abs(p.currentPosition - seek) > 120) {
+                p.seekTo(seek.coerceAtLeast(0))
+            }
+            if (playing && !p.isPlaying) p.play()
+            if (!playing && p.isPlaying) p.pause()
+        }
+    }
+
     fun attachSurface(surface: Surface?) {
-        ensurePlayer().setVideoSurface(surface)
+        ensureVideo().setVideoSurface(surface)
     }
 
     fun play() {
-        ensurePlayer().play()
+        videoPlayer?.play()
+        audioPlayers.values.forEach { it.play() }
     }
 
     fun pause() {
-        player?.pause()
+        videoPlayer?.pause()
+        audioPlayers.values.forEach { it.pause() }
     }
 
-    fun toggle() {
-        val p = ensurePlayer()
-        if (p.isPlaying) p.pause() else p.play()
-    }
-
-    fun seekToMs(ms: Long) {
-        player?.seekTo(ms.coerceAtLeast(0))
+    fun seekVideoMs(ms: Long) {
+        videoPlayer?.seekTo(ms.coerceAtLeast(0))
         _positionMs.value = ms.coerceAtLeast(0)
     }
 
     fun pollPosition() {
-        val p = player ?: return
+        val p = videoPlayer ?: return
         _positionMs.value = p.currentPosition
         _isPlaying.value = p.isPlaying
     }
 
     fun release() {
-        player?.removeListener(listener)
-        player?.release()
-        player = null
-        currentUri = null
-        _ready.value = false
+        videoPlayer?.removeListener(listener)
+        videoPlayer?.release()
+        videoPlayer = null
+        audioPlayers.values.forEach { it.release() }
+        audioPlayers.clear()
+        currentVideoUri = null
         _isPlaying.value = false
     }
 }

@@ -8,9 +8,15 @@ enum class LayerType { VIDEO, AUDIO, IMAGE, TEXT, SOLID, ADJUSTMENT }
 
 enum class SaveStatus { SAVED, DIRTY, SAVING, ERROR }
 
+enum class Ease { LINEAR, EASE_IN, EASE_OUT, EASE_IN_OUT }
+
 data class Keyframe(
     val timeSec: Float,
-    val value: Float
+    val value: Float,
+    val ease: Ease = Ease.LINEAR,
+    /** Normalized 0-1 bezier handle strengths for cubic segment leaving this key */
+    val outStrength: Float = 0.4f,
+    val inStrength: Float = 0.4f
 )
 
 data class EffectInstance(
@@ -40,6 +46,15 @@ data class EditorClip(
     val visible: Boolean = true,
     val locked: Boolean = false,
     val muted: Boolean = false,
+    /** 0..1 audio level */
+    val volume: Float = 1f,
+    /** Playback speed 0.25..4 (1 = normal). Affects duration perception / local time. */
+    val speed: Float = 1f,
+    val textContent: String = "Text",
+    val textSize: Float = 1f,
+    val textColorArgb: Int = 0xFFFFFFFF.toInt(),
+    val fadeInSec: Float = 0f,
+    val fadeOutSec: Float = 0f,
     // Transform
     val posX: Float = 0.5f,
     val posY: Float = 0.5f,
@@ -96,6 +111,10 @@ sealed class EditorAction {
     data class ToggleEffect(val clipId: String, val effectId: String) : EditorAction()
     data class SetTitle(val title: String) : EditorAction()
     data object MarkSaved : EditorAction()
+    data object DuplicateSelected : EditorAction()
+    data class AddMarker(val timeSec: Float) : EditorAction()
+    data class ClearMarkers(val unused: Boolean = true) : EditorAction()
+    data class SetSoloTrack(val track: Int?) : EditorAction()
     data object Undo : EditorAction()
     data object Redo : EditorAction()
 }
@@ -110,4 +129,12 @@ val BUILTIN_EFFECTS = listOf(
     EffectInstance("chroma", "Chromatic Aberration", "Distort", intensity = 0.3f),
     EffectInstance("sharpen", "Sharpen", "Detail", intensity = 0.4f),
     EffectInstance("noise", "Noise", "Texture", intensity = 0.25f)
+)
+
+
+data class ExportSettings(
+    val width: Int = 1920,
+    val height: Int = 1080,
+    val fps: Int = 30,
+    val includeAudio: Boolean = true
 )

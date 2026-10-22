@@ -32,6 +32,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -94,6 +97,12 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vyntara.editor.editor.effects.EffectCatalog
+import com.vyntara.editor.editor.scene3d.Object3DType
+import com.vyntara.editor.editor.scene3d.Scene3D
+import com.vyntara.editor.editor.scene3d.Scene3DViewport
+import com.vyntara.editor.editor.ui.ProfessionalTimeline
+import com.vyntara.editor.editor.KeyframeEval
+import com.vyntara.editor.editor.Ease
 import com.vyntara.editor.editor.effects.EffectStatus
 import com.vyntara.editor.home.LocalLanguage
 import com.vyntara.editor.i18n.AppLanguage
@@ -103,6 +112,9 @@ import com.vyntara.editor.ui.theme.VyntaraColors
 import kotlinx.coroutines.delay
 
 private enum class ToolPanel { TIMELINE, LAYERS, INSPECTOR, EFFECTS, MEDIA, TEXT, SCENE3D }
+
+/** AUTO follows device orientation; DESKTOP forces PC-like panels; COMPACT forces stacked mobile. */
+private enum class LayoutMode { AUTO, DESKTOP, COMPACT }
 
 /**
  * Professional adaptive editor.
@@ -131,8 +143,12 @@ fun EditorScreen(
     val importing by vm.importing.collectAsStateWithLifecycle()
     val exportProgress by vm.exportProgress.collectAsStateWithLifecycle()
     val lastExportPath by vm.lastExportPath.collectAsStateWithLifecycle()
+    val scene3d by vm.scene3d.collectAsStateWithLifecycle()
 
     var panel by remember { mutableStateOf(ToolPanel.TIMELINE) }
+    var layoutMode by remember { mutableStateOf(LayoutMode.AUTO) }
+    var showExportDialog by remember { mutableStateOf(false) }
+    val exportSettings by vm.exportSettings.collectAsStateWithLifecycle()
     var showExitDialog by remember { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(
@@ -147,6 +163,19 @@ fun EditorScreen(
         } catch (_: SecurityException) { /* some providers disallow persist */ }
         vm.importUri(uri)
         panel = ToolPanel.TIMELINE
+    }
+
+    val gltfPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        try {
+            ctx.contentResolver.takePersistableUriPermission(
+                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (_: SecurityException) {}
+        vm.importGltf(uri)
+        panel = ToolPanel.SCENE3D
     }
 
     fun requestExit() {
@@ -165,8 +194,13 @@ fun EditorScreen(
 
     Box(modifier.fillMaxSize().background(colors.background)) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            val landscape = maxWidth > maxHeight && maxWidth > 600.dp
-            if (landscape) {
+            val autoDesktop = maxWidth > maxHeight && maxWidth > 560.dp
+            val useDesktop = when (layoutMode) {
+                LayoutMode.DESKTOP -> true
+                LayoutMode.COMPACT -> false
+                LayoutMode.AUTO -> autoDesktop
+            }
+            if (useDesktop) {
                 LandscapeEditor(
                     doc = doc,
                     panel = panel,
@@ -179,9 +213,25 @@ fun EditorScreen(
                     onBack = ::requestExit,
                     onStep = vm::stepFrame,
                     previewBitmap = previewBitmap,
-                    onExport = vm::export,
+                    onExport = { showExportDialog = true },
                     exportLabel = exportProgress?.let { p ->
                         if (p.totalFrames > 0 && p.frame < p.totalFrames) "${(p.fraction * 100).toInt()}%" else null
+                    },
+                    scene3d = scene3d,
+                    onSceneChange = vm::updateScene3d,
+                    onAddObject3d = vm::addObject3d,
+                    onAddKeyframe = vm::addKeyframe,
+                    onImportGltf = { gltfPicker.launch(arrayOf("model/gltf+json", "model/gltf-binary", "application/octet-stream", "application/json", "*/*")) },
+                    onAddParticles = vm::addParticleEmitter,
+                    onKeyframe3d = vm::addKeyframe3d,
+                    onSave = vm::saveComposition,
+                    layoutMode = layoutMode,
+                    onCycleLayout = {
+                        layoutMode = when (layoutMode) {
+                            LayoutMode.AUTO -> LayoutMode.DESKTOP
+                            LayoutMode.DESKTOP -> LayoutMode.COMPACT
+                            LayoutMode.COMPACT -> LayoutMode.AUTO
+                        }
                     }
                 )
             } else {
@@ -197,10 +247,43 @@ fun EditorScreen(
                     onBack = ::requestExit,
                     onStep = vm::stepFrame,
                     previewBitmap = previewBitmap,
-                    onExport = vm::export,
+                    onExport = { showExportDialog = true },
                     exportLabel = exportProgress?.let { p ->
                         if (p.totalFrames > 0 && p.frame < p.totalFrames) "${(p.fraction * 100).toInt()}%" else null
+                    },
+                    scene3d = scene3d,
+                    onSceneChange = vm::updateScene3d,
+                    onAddObject3d = vm::addObject3d,
+                    onAddKeyframe = vm::addKeyframe,
+                    onImportGltf = { gltfPicker.launch(arrayOf("model/gltf+json", "model/gltf-binary", "application/octet-stream", "application/json", "*/*")) },
+                    onAddParticles = vm::addParticleEmitter,
+                    onKeyframe3d = vm::addKeyframe3d,
+                    onSave = vm::saveComposition,
+                    layoutMode = layoutMode,
+                    onCycleLayout = {
+                        layoutMode = when (layoutMode) {
+                            LayoutMode.AUTO -> LayoutMode.DESKTOP
+                            LayoutMode.DESKTOP -> LayoutMode.COMPACT
+                            LayoutMode.COMPACT -> LayoutMode.AUTO
+                        }
                     }
+                )
+            }
+        }
+
+        exportProgress?.let { p ->
+            if (p.totalFrames > 0 && p.frame < p.totalFrames) {
+                Text(
+                    if (lang == AppLanguage.ENGLISH) "Cancel export" else "Cancelar export",
+                    color = colors.danger,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 72.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(colors.card)
+                        .clickable { vm.cancelExport() }
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
                 )
             }
         }
@@ -260,6 +343,94 @@ fun EditorScreen(
     }
 }
 
+    if (showExportDialog) {
+        AlertDialog(
+            onDismissRequest = { showExportDialog = false },
+            title = { Text(if (lang == AppLanguage.ENGLISH) "Export" else "Exportar") },
+            text = {
+                Column {
+                    Text(
+                        if (lang == AppLanguage.ENGLISH) "Resolution & FPS" else "Resolucion y FPS",
+                        color = colors.muted,
+                        fontSize = 12.sp
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(
+                            Triple(1280, 720, "720p"),
+                            Triple(1920, 1080, "1080p"),
+                            Triple(doc.width, doc.height, "Project")
+                        ).forEach { (w, h, label) ->
+                            val sel = exportSettings.width == w && exportSettings.height == h
+                            Text(
+                                label,
+                                color = if (sel) Color.White else colors.text,
+                                fontSize = 12.sp,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (sel) colors.primary else colors.surface)
+                                    .clickable {
+                                        vm.updateExportSettings(
+                                            exportSettings.copy(width = w, height = h)
+                                        )
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(24, 30, 60).forEach { f ->
+                            val sel = exportSettings.fps == f
+                            Text(
+                                "${f}fps",
+                                color = if (sel) Color.White else colors.text,
+                                fontSize = 12.sp,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (sel) colors.primary else colors.surface)
+                                    .clickable {
+                                        vm.updateExportSettings(exportSettings.copy(fps = f))
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        if (exportSettings.includeAudio)
+                            (if (lang == AppLanguage.ENGLISH) "Audio: ON" else "Audio: SI")
+                        else
+                            (if (lang == AppLanguage.ENGLISH) "Audio: OFF" else "Audio: NO"),
+                        color = colors.primary,
+                        fontSize = 13.sp,
+                        modifier = Modifier
+                            .clickable {
+                                vm.updateExportSettings(
+                                    exportSettings.copy(includeAudio = !exportSettings.includeAudio)
+                                )
+                            }
+                            .padding(4.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExportDialog = false
+                    vm.export()
+                }) {
+                    Text(if (lang == AppLanguage.ENGLISH) "Start" else "Iniciar", color = colors.primary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExportDialog = false }) {
+                    Text(if (lang == AppLanguage.ENGLISH) "Cancel" else "Cancelar")
+                }
+            },
+            containerColor = colors.card
+        )
+    }
+
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PortraitEditor(
@@ -275,13 +446,23 @@ private fun PortraitEditor(
     onStep: (Int) -> Unit,
     previewBitmap: android.graphics.Bitmap?,
     onExport: () -> Unit = {},
-    exportLabel: String? = null
+    exportLabel: String? = null,
+    scene3d: Scene3D = Scene3D.demo(),
+    onSceneChange: (Scene3D) -> Unit = {},
+    onAddObject3d: (Object3DType) -> Unit = {},
+    onAddKeyframe: (String) -> Unit = {},
+    onImportGltf: () -> Unit = {},
+    onAddParticles: () -> Unit = {},
+    onKeyframe3d: (String) -> Unit = {},
+    onSave: () -> Unit = {},
+    layoutMode: LayoutMode = LayoutMode.AUTO,
+    onCycleLayout: () -> Unit = {}
 ) {
     Column(Modifier.fillMaxSize()) {
-        EditorTopBar(doc, colors, lang, onDispatch, onBack, onExport, exportLabel)
+        EditorTopBar(doc, colors, lang, onDispatch, onBack, onExport, exportLabel, onSave, layoutMode, onCycleLayout)
         Monitor(doc, colors, lang, Modifier.fillMaxWidth().weight(0.36f), previewBitmap)
         TransportBar(doc, colors, onDispatch, onStep)
-        TimelineStrip(doc, colors, Modifier.fillMaxWidth().height(120.dp), onDispatch)
+        ProfessionalTimeline(doc, colors, Modifier.fillMaxWidth().height(140.dp), onDispatch, compact = true)
         ToolStrip(panel, colors, lang, onPanel, onImport, onDispatch, doc)
         AnimatedContent(
             targetState = panel,
@@ -289,7 +470,7 @@ private fun PortraitEditor(
             modifier = Modifier.weight(0.32f).fillMaxWidth(),
             label = "panel"
         ) { p ->
-            PanelBody(p, doc, colors, lang, onDispatch, onApplyEffect, onImport)
+            PanelBody(p, doc, colors, lang, onDispatch, onApplyEffect, onImport, scene3d, onSceneChange, onAddObject3d, onAddKeyframe, onImportGltf, onAddParticles, onKeyframe3d)
         }
     }
 }
@@ -308,10 +489,20 @@ private fun LandscapeEditor(
     onStep: (Int) -> Unit,
     previewBitmap: android.graphics.Bitmap?,
     onExport: () -> Unit = {},
-    exportLabel: String? = null
+    exportLabel: String? = null,
+    scene3d: Scene3D = Scene3D.demo(),
+    onSceneChange: (Scene3D) -> Unit = {},
+    onAddObject3d: (Object3DType) -> Unit = {},
+    onAddKeyframe: (String) -> Unit = {},
+    onImportGltf: () -> Unit = {},
+    onAddParticles: () -> Unit = {},
+    onKeyframe3d: (String) -> Unit = {},
+    onSave: () -> Unit = {},
+    layoutMode: LayoutMode = LayoutMode.AUTO,
+    onCycleLayout: () -> Unit = {}
 ) {
     Column(Modifier.fillMaxSize()) {
-        EditorTopBar(doc, colors, lang, onDispatch, onBack, onExport, exportLabel)
+        EditorTopBar(doc, colors, lang, onDispatch, onBack, onExport, exportLabel, onSave, layoutMode, onCycleLayout)
         Row(Modifier.weight(1f).fillMaxWidth()) {
             // Left tool rail
             Column(
@@ -337,9 +528,9 @@ private fun LandscapeEditor(
             }
             // Center: monitor + timeline
             Column(Modifier.weight(1f).fillMaxHeight()) {
-                Monitor(doc, colors, lang, Modifier.fillMaxWidth().weight(0.55f), previewBitmap)
+                Monitor(doc, colors, lang, Modifier.fillMaxWidth().weight(0.52f), previewBitmap)
                 TransportBar(doc, colors, onDispatch, onStep)
-                TimelineStrip(doc, colors, Modifier.fillMaxWidth().weight(0.45f), onDispatch)
+                ProfessionalTimeline(doc, colors, Modifier.fillMaxWidth().weight(0.48f), onDispatch, compact = false)
             }
             // Right inspector / active panel
             Box(
@@ -348,7 +539,7 @@ private fun LandscapeEditor(
                     .fillMaxHeight()
                     .background(colors.card)
             ) {
-                PanelBody(panel, doc, colors, lang, onDispatch, onApplyEffect, onImport)
+                PanelBody(panel, doc, colors, lang, onDispatch, onApplyEffect, onImport, scene3d, onSceneChange, onAddObject3d, onAddKeyframe, onImportGltf, onAddParticles, onKeyframe3d)
             }
         }
     }
@@ -363,7 +554,10 @@ private fun EditorTopBar(
     onDispatch: (EditorAction) -> Unit,
     onBack: () -> Unit,
     onExport: () -> Unit = {},
-    exportLabel: String? = null
+    exportLabel: String? = null,
+    onSave: () -> Unit = {},
+    layoutMode: LayoutMode = LayoutMode.AUTO,
+    onCycleLayout: () -> Unit = {}
 ) {
     TopAppBar(
         title = {
@@ -689,7 +883,14 @@ private fun PanelBody(
     lang: AppLanguage,
     onDispatch: (EditorAction) -> Unit,
     onApplyEffect: (String) -> Unit,
-    onImport: () -> Unit
+    onImport: () -> Unit,
+    scene3d: Scene3D = Scene3D.demo(),
+    onSceneChange: (Scene3D) -> Unit = {},
+    onAddObject3d: (Object3DType) -> Unit = {},
+    onAddKeyframe: (String) -> Unit = {},
+    onImportGltf: () -> Unit = {},
+    onAddParticles: () -> Unit = {},
+    onKeyframe3d: (String) -> Unit = {}
 ) {
     when (panel) {
         ToolPanel.TIMELINE -> Box(Modifier.fillMaxSize().padding(12.dp)) {
@@ -703,7 +904,7 @@ private fun PanelBody(
             )
         }
         ToolPanel.LAYERS -> LayersBody(doc, colors, lang, onDispatch)
-        ToolPanel.INSPECTOR -> InspectorBody(doc, colors, lang, onDispatch)
+        ToolPanel.INSPECTOR -> InspectorBody(doc, colors, lang, onDispatch, onAddKeyframe)
         ToolPanel.EFFECTS -> EffectsBody(doc, colors, lang, onApplyEffect)
         ToolPanel.MEDIA -> Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -737,16 +938,115 @@ private fun PanelBody(
                 )
             }
         }
-        ToolPanel.TEXT, ToolPanel.SCENE3D -> Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+        ToolPanel.TEXT -> Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)
+        ) {
             Text(
-                if (lang == AppLanguage.ENGLISH)
-                    "${panel.name} — planned after media pipeline"
-                else
-                    "${panel.name} — planificado tras el pipeline multimedia",
-                color = colors.muted,
-                fontSize = 13.sp
+                if (lang == AppLanguage.ENGLISH) "Text & Solids" else "Texto y solidos",
+                color = colors.text,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 15.sp
             )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                if (lang == AppLanguage.ENGLISH) "Add text clip" else "Anadir texto",
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.primary)
+                    .clickable {
+                        onDispatch(
+                            EditorAction.AddClip(
+                                EditorClip(
+                                    id = "txt${doc.clips.size + 1}",
+                                    name = "Text",
+                                    type = LayerType.TEXT,
+                                    trackIndex = (doc.clips.maxOfOrNull { it.trackIndex } ?: 0) + 1,
+                                    startSec = doc.playheadSec,
+                                    durationSec = 3f,
+                                    textContent = "VYNTARA"
+                                )
+                            )
+                        )
+                    }
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (lang == AppLanguage.ENGLISH) "Add solid" else "Anadir solido",
+                color = colors.text,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.surface)
+                    .clickable {
+                        onDispatch(
+                            EditorAction.AddClip(
+                                EditorClip(
+                                    id = "sol${doc.clips.size + 1}",
+                                    name = "Solid",
+                                    type = LayerType.SOLID,
+                                    trackIndex = (doc.clips.maxOfOrNull { it.trackIndex } ?: 0) + 1,
+                                    startSec = doc.playheadSec,
+                                    durationSec = 3f,
+                                    textColorArgb = 0xFFE11D48.toInt(),
+                                    scaleX = 0.5f,
+                                    scaleY = 0.3f
+                                )
+                            )
+                        )
+                    }
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+            )
+            val sel = doc.selected
+            if (sel != null && (sel.type == LayerType.TEXT || sel.type == LayerType.SOLID)) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    if (lang == AppLanguage.ENGLISH) "Selected content" else "Contenido",
+                    color = colors.muted,
+                    fontSize = 12.sp
+                )
+                listOf("VYNTARA", "Title", "Hello", "2026").forEach { sample ->
+                    Text(
+                        sample,
+                        color = colors.text,
+                        fontSize = 13.sp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(colors.surface)
+                            .clickable {
+                                onDispatch(EditorAction.UpdateClip(sel.copy(textContent = sample, name = sample)))
+                            }
+                            .padding(10.dp)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (lang == AppLanguage.ENGLISH) "Color" else "Color",
+                    color = colors.muted,
+                    fontSize = 12.sp
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(0xFFFFFFFF.toInt(), 0xFFE11D48.toInt(), 0xFF22C55E.toInt(), 0xFF3B82F6.toInt(), 0xFFFBBF24.toInt()).forEach { col ->
+                        Box(
+                            Modifier
+                                .size(28.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(col))
+                                .clickable {
+                                    onDispatch(EditorAction.UpdateClip(sel.copy(textColorArgb = col)))
+                                }
+                        )
+                    }
+                }
+            }
         }
+        ToolPanel.SCENE3D -> Scene3DPanel(scene3d, colors, lang, onSceneChange, onAddObject3d, onImportGltf, onAddParticles, onKeyframe3d, doc.playheadSec)
     }
 }
 
@@ -797,7 +1097,13 @@ private fun LayersBody(doc: EditorDocument, colors: VyntaraColors, lang: AppLang
 }
 
 @Composable
-private fun InspectorBody(doc: EditorDocument, colors: VyntaraColors, lang: AppLanguage, onDispatch: (EditorAction) -> Unit) {
+private fun InspectorBody(
+    doc: EditorDocument,
+    colors: VyntaraColors,
+    lang: AppLanguage,
+    onDispatch: (EditorAction) -> Unit,
+    onAddKeyframe: (String) -> Unit = {}
+) {
     val clip = doc.selected
     if (clip == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -809,8 +1115,90 @@ private fun InspectorBody(doc: EditorDocument, colors: VyntaraColors, lang: AppL
         Text(clip.name, color = colors.text, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
         Text("${clip.type} · ${"%.1f".format(clip.durationSec)}s", color = colors.muted, fontSize = 11.sp)
         Spacer(Modifier.height(8.dp))
+        Text(
+            if (lang == AppLanguage.ENGLISH) "Keyframes at playhead" else "Keyframes en cabezal",
+            color = colors.muted,
+            fontSize = 11.sp
+        )
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("opacity", "posX", "posY", "scaleX", "rotation", "blurRadius").forEach { prop ->
+                Text(
+                    prop,
+                    color = colors.primary,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(colors.surface)
+                        .clickable { onAddKeyframe(prop) }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        // Easing for existing opacity keys
+        val opKeys = clip.keyframes["opacity"].orEmpty()
+        if (opKeys.isNotEmpty()) {
+            Text(
+                if (lang == AppLanguage.ENGLISH) "Opacity curve ease" else "Curva opacidad",
+                color = colors.muted,
+                fontSize = 11.sp
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf(Ease.LINEAR, Ease.EASE_IN, Ease.EASE_OUT, Ease.EASE_IN_OUT).forEach { ease ->
+                    val label = when (ease) {
+                        Ease.LINEAR -> "Lin"
+                        Ease.EASE_IN -> "In"
+                        Ease.EASE_OUT -> "Out"
+                        Ease.EASE_IN_OUT -> "InOut"
+                    }
+                    Text(
+                        label,
+                        color = colors.text,
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(colors.surface)
+                            .clickable {
+                                val updated = opKeys.map { it.copy(ease = ease) }
+                                onDispatch(
+                                    EditorAction.UpdateClip(
+                                        clip.copy(keyframes = clip.keyframes + ("opacity" to updated))
+                                    )
+                                )
+                            }
+                            .padding(horizontal = 8.dp, vertical = 5.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            // Mini curve preview
+            Canvas(Modifier.fillMaxWidth().height(48.dp).background(colors.surface, RoundedCornerShape(8.dp)).padding(4.dp)) {
+                val sorted = opKeys.sortedBy { it.timeSec }
+                if (sorted.size >= 2) {
+                    val minT = sorted.first().timeSec
+                    val maxT = sorted.last().timeSec.coerceAtLeast(minT + 0.01f)
+                    val path = Path()
+                    val steps = 32
+                    for (i in 0..steps) {
+                        val u = i / steps.toFloat()
+                        val t = minT + (maxT - minT) * u
+                        val v = KeyframeEval.value(sorted, t, clip.opacity)
+                        val x = u * size.width
+                        val y = size.height - v.coerceIn(0f, 1f) * size.height
+                        if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                    }
+                    drawPath(path, colors.primary, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
         listOf(
             (if (lang == AppLanguage.ENGLISH) "Opacity" else "Opacidad") to (clip.opacity to { v: Float -> onDispatch(EditorAction.UpdateClip(clip.copy(opacity = v))) }),
+            (if (lang == AppLanguage.ENGLISH) "Volume" else "Volumen") to (clip.volume to { v: Float -> onDispatch(EditorAction.UpdateClip(clip.copy(volume = v))) }),
+            (if (lang == AppLanguage.ENGLISH) "Speed" else "Velocidad") to (clip.speed to { v: Float -> onDispatch(EditorAction.UpdateClip(clip.copy(speed = v))) }),
+            (if (lang == AppLanguage.ENGLISH) "Text size" else "Tam. texto") to (clip.textSize to { v: Float -> onDispatch(EditorAction.UpdateClip(clip.copy(textSize = v))) }),
+            (if (lang == AppLanguage.ENGLISH) "Fade in" else "Fundido in") to (clip.fadeInSec to { v: Float -> onDispatch(EditorAction.UpdateClip(clip.copy(fadeInSec = v))) }),
+            (if (lang == AppLanguage.ENGLISH) "Fade out" else "Fundido out") to (clip.fadeOutSec to { v: Float -> onDispatch(EditorAction.UpdateClip(clip.copy(fadeOutSec = v))) }),
             (if (lang == AppLanguage.ENGLISH) "Scale X" else "Escala X") to (clip.scaleX to { v: Float -> onDispatch(EditorAction.UpdateClip(clip.copy(scaleX = v))) }),
             (if (lang == AppLanguage.ENGLISH) "Scale Y" else "Escala Y") to (clip.scaleY to { v: Float -> onDispatch(EditorAction.UpdateClip(clip.copy(scaleY = v))) }),
             (if (lang == AppLanguage.ENGLISH) "Rotation" else "Rotacion") to (clip.rotation to { v: Float -> onDispatch(EditorAction.UpdateClip(clip.copy(rotation = v))) }),
@@ -824,6 +1212,10 @@ private fun InspectorBody(doc: EditorDocument, colors: VyntaraColors, lang: AppL
                 (if (lang == AppLanguage.ENGLISH) "Rotation" else "Rotacion") -> -180f to 180f
                 (if (lang == AppLanguage.ENGLISH) "Scale X" else "Escala X"),
                 (if (lang == AppLanguage.ENGLISH) "Scale Y" else "Escala Y") -> 0.1f to 3f
+                (if (lang == AppLanguage.ENGLISH) "Speed" else "Velocidad") -> 0.25f to 4f
+                (if (lang == AppLanguage.ENGLISH) "Text size" else "Tam. texto") -> 0.3f to 3f
+                (if (lang == AppLanguage.ENGLISH) "Fade in" else "Fundido in"),
+                (if (lang == AppLanguage.ENGLISH) "Fade out" else "Fundido out") -> 0f to 3f
                 else -> 0f to 1f
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -841,67 +1233,308 @@ private fun InspectorBody(doc: EditorDocument, colors: VyntaraColors, lang: AppL
     }
 }
 
-@Composable
 private fun EffectsBody(doc: EditorDocument, colors: VyntaraColors, lang: AppLanguage, onApply: (String) -> Unit) {
     var cat by remember { mutableStateOf(if (lang == AppLanguage.ENGLISH) "All" else "Todos") }
+    var query by remember { mutableStateOf("") }
     val cats = listOf(if (lang == AppLanguage.ENGLISH) "All" else "Todos") + EffectCatalog.categories()
+    val list = EffectCatalog.byCategory(cat).filter {
+        query.isBlank() || it.name.contains(query, true) || it.nameEn.contains(query, true)
+    }
     Column(Modifier.fillMaxSize().padding(10.dp)) {
         Text(
-            if (lang == AppLanguage.ENGLISH) "Effects" else "Efectos",
+            if (lang == AppLanguage.ENGLISH) "Effects library" else "Biblioteca de efectos",
             color = colors.text,
             fontWeight = FontWeight.SemiBold,
             fontSize = 14.sp
         )
         Text(
-            if (lang == AppLanguage.ENGLISH)
-                "${EffectCatalog.ready().size} ready · ${EffectCatalog.all.size} listed · GPU shaders next"
-            else
-                "${EffectCatalog.ready().size} listos · ${EffectCatalog.all.size} listados · shaders GPU despues",
+            "${EffectCatalog.ready().size} READY · ${EffectCatalog.all.size} total",
             color = colors.muted,
             fontSize = 11.sp
         )
         Spacer(Modifier.height(8.dp))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             cats.forEach { c ->
+                val sel = c == cat
                 Text(
                     c,
-                    color = if (c == cat) Color.White else colors.text,
-                    fontSize = 12.sp,
+                    color = if (sel) Color.White else colors.text,
+                    fontSize = 11.sp,
+                    fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (c == cat) colors.primary else colors.surface)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(if (sel) colors.primary else colors.surface)
                         .clickable { cat = c }
-                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                        .padding(horizontal = 12.dp, vertical = 7.dp)
                 )
             }
         }
         Spacer(Modifier.height(8.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            items(EffectCatalog.byCategory(cat), key = { it.id }) { e ->
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(110.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            items(list, key = { it.id }) { e ->
                 val ready = e.status == EffectStatus.READY
-                Row(
+                Column(
                     Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(colors.surface)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.card)
+                        .border(
+                            1.dp,
+                            if (ready) colors.primary.copy(alpha = 0.35f) else colors.muted.copy(alpha = 0.12f),
+                            RoundedCornerShape(12.dp)
+                        )
                         .clickable(enabled = ready) { onApply(e.id) }
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(10.dp)
                 ) {
-                    Icon(Icons.Outlined.BlurOn, null, tint = if (ready) colors.primary else colors.muted, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(if (lang == AppLanguage.ENGLISH) e.nameEn else e.name, color = colors.text, fontSize = 13.sp)
-                        Text(e.category + " · " + e.cost, color = colors.muted, fontSize = 11.sp)
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (ready) colors.primary.copy(alpha = 0.18f)
+                                else colors.surface
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Outlined.BlurOn,
+                            null,
+                            tint = if (ready) colors.primary else colors.muted,
+                            modifier = Modifier.size(22.dp)
+                        )
                     }
+                    Spacer(Modifier.height(6.dp))
                     Text(
-                        if (ready) "OK" else if (lang == AppLanguage.ENGLISH) "Soon" else "Pronto",
-                        color = if (ready) colors.success else colors.muted,
+                        if (lang == AppLanguage.ENGLISH) e.nameEn else e.name,
+                        color = if (ready) colors.text else colors.muted,
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 2
+                    )
+                    Text(
+                        if (ready) "READY" else "PLANNED",
+                        color = if (ready) colors.success else colors.muted,
+                        fontSize = 9.sp
                     )
                 }
             }
+        }
+    }
+}
+
+
+@Composable
+private fun Scene3DPanel(
+    scene: Scene3D,
+    colors: VyntaraColors,
+    lang: AppLanguage,
+    onSceneChange: (Scene3D) -> Unit,
+    onAdd: (Object3DType) -> Unit,
+    onImportGltf: () -> Unit = {},
+    onAddParticles: () -> Unit = {},
+    onKeyframe3d: (String) -> Unit = {},
+    playheadSec: Float = 0f
+) {
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                if (lang == AppLanguage.ENGLISH) "3D Scene (OpenGL ES)" else "Escena 3D (OpenGL ES)",
+                color = colors.text,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp
+            )
+            Text(
+                if (scene.previewEnabled) "3D ON" else "3D OFF",
+                color = if (scene.previewEnabled) colors.primary else colors.muted,
+                fontSize = 12.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(colors.surface)
+                    .clickable { onSceneChange(scene.copy(previewEnabled = !scene.previewEnabled)) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .padding(horizontal = 8.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF0F1116))
+        ) {
+            Scene3DViewport(scene = scene, onSceneChange = onSceneChange, modifier = Modifier.fillMaxSize())
+        }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                "glTF",
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(colors.primary)
+                    .clickable(onClick = onImportGltf)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            )
+            listOf(
+                Object3DType.CUBE to "Cube",
+                Object3DType.SPHERE to "Sphere",
+                Object3DType.PLANE to "Plane",
+                Object3DType.LIGHT to "Light",
+                Object3DType.CAMERA to "Cam",
+                Object3DType.NULL to "Null"
+            ).forEach { (type, label) ->
+                Text(
+                    label,
+                    color = colors.text,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(colors.surface)
+                        .clickable { onAdd(type) }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+            }
+            Text(
+                "FX",
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFE11D48))
+                    .clickable(onClick = onAddParticles)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            )
+        }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf(0 to "LQ", 1 to "MQ", 2 to "HQ").forEach { (q, label) ->
+                val sel = scene.viewportQuality == q
+                Text(
+                    label,
+                    color = if (sel) Color.White else colors.text,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (sel) colors.primary else colors.surface)
+                        .clickable { onSceneChange(scene.copy(viewportQuality = q)) }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+            listOf("posX", "posY", "posZ", "rotY").forEach { prop ->
+                Text(
+                    prop,
+                    color = colors.secondary,
+                    fontSize = 10.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(colors.surface)
+                        .clickable { onKeyframe3d(prop) }
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                )
+            }
+            listOf("yaw", "pitch", "distance").forEach { prop ->
+                Text(
+                    "cam:$prop",
+                    color = colors.primary,
+                    fontSize = 10.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(colors.surface)
+                        .clickable { onCameraKeyframe(prop) }
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                )
+            }
+        }
+        LazyColumn(
+            Modifier.fillMaxWidth().height(72.dp).padding(horizontal = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            items(scene.objects, key = { it.id }) { obj ->
+                Text(
+                    obj.name + " (" + obj.type.name + ")",
+                    color = if (obj.id == scene.selectedId) colors.primary else colors.muted,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSceneChange(scene.copy(selectedId = obj.id)) }
+                        .padding(6.dp)
+                )
+            }
+        }
+        scene.selected?.let { sel ->
+            Text("Transform: ${sel.name}", color = colors.muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp))
+            listOf(
+                "X" to sel.position.x,
+                "Y" to sel.position.y,
+                "Z" to sel.position.z
+            ).forEach { (axis, value) ->
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(axis, color = colors.muted, fontSize = 11.sp, modifier = Modifier.width(16.dp))
+                    Slider(
+                        value = value,
+                        onValueChange = { v ->
+                            val pos = when (axis) {
+                                "X" -> sel.position.copy(x = v)
+                                "Y" -> sel.position.copy(y = v)
+                                else -> sel.position.copy(z = v)
+                            }
+                            val updated = scene.objects.map {
+                                if (it.id == sel.id) it.copy(position = pos) else it
+                            }
+                            onSceneChange(scene.copy(objects = updated))
+                        },
+                        valueRange = -5f..5f,
+                        modifier = Modifier.weight(1f).height(24.dp),
+                        colors = SliderDefaults.colors(thumbColor = colors.primary, activeTrackColor = colors.primary)
+                    )
+                }
+            }
+            // Material
+            Text("Rough", color = colors.muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp))
+            Slider(
+                value = sel.material.roughness,
+                onValueChange = { v ->
+                    val updated = scene.objects.map {
+                        if (it.id == sel.id) it.copy(material = it.material.copy(roughness = v)) else it
+                    }
+                    onSceneChange(scene.copy(objects = updated))
+                },
+                valueRange = 0f..1f,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(24.dp),
+                colors = SliderDefaults.colors(thumbColor = colors.primary, activeTrackColor = colors.primary)
+            )
+            Text("Emit", color = colors.muted, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp))
+            Slider(
+                value = sel.material.emissive,
+                onValueChange = { v ->
+                    val updated = scene.objects.map {
+                        if (it.id == sel.id) it.copy(material = it.material.copy(emissive = v)) else it
+                    }
+                    onSceneChange(scene.copy(objects = updated))
+                },
+                valueRange = 0f..1f,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(24.dp),
+                colors = SliderDefaults.colors(thumbColor = colors.primary, activeTrackColor = colors.primary)
+            )
         }
     }
 }

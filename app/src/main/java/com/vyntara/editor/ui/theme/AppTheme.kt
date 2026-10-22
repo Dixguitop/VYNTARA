@@ -45,26 +45,27 @@ val LocalAppTheme = staticCompositionLocalOf {
 fun themeColors(id: AppThemeId, accentOverride: Long?): VyntaraColors {
     val base = when (id) {
         AppThemeId.CRIMSON -> VyntaraColors(
-            background = Color(0xFF080808),
-            surface = Color(0xFF121212),
-            card = Color(0xFF1A1A1A),
+            background = Color(0xFF07070A),
+            surface = Color(0xFF111118),
+            card = Color(0xFF1A1A24),
             primary = Color(0xFFE11D2E),
-            secondary = Color(0xFFFF4D5A),
-            text = Color(0xFFF5F5F5),
-            muted = Color(0xFF9A9A9A),
+            secondary = Color(0xFFFF6B7A),
+            text = Color(0xFFF3F4F8),
+            muted = Color(0xFF9494A8),
             danger = Color(0xFFFF6B6B),
             success = Color(0xFF22C55E)
         )
+        // Reference-like purple/cyan studio look
         AppThemeId.VIOLET -> VyntaraColors(
-            background = Color(0xFF050508),
-            surface = Color(0xFF0E0E14),
-            card = Color(0xFF16161F),
-            primary = Color(0xFF7B5CFF),
-            secondary = Color(0xFF00E5FF),
-            text = Color(0xFFE8E8F0),
-            muted = Color(0xFF8B8BA0),
+            background = Color(0xFF07070F),
+            surface = Color(0xFF0F101A),
+            card = Color(0xFF161826),
+            primary = Color(0xFF8B5CFF),
+            secondary = Color(0xFF22D3EE),
+            text = Color(0xFFEAEAF2),
+            muted = Color(0xFF8B8BA3),
             danger = Color(0xFFF87171),
-            success = Color(0xFF22C55E)
+            success = Color(0xFF34D399)
         )
         AppThemeId.OCEAN -> VyntaraColors(
             background = Color(0xFF061018),
