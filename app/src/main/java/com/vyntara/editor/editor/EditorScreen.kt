@@ -46,25 +46,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.vyntara.editor.project.ProjectSummary
-import com.vyntara.editor.ui.theme.colors.background
-import com.vyntara.editor.ui.theme.colors.card
-import com.vyntara.editor.ui.theme.colors.secondary
-import com.vyntara.editor.ui.theme.colors.muted
-import com.vyntara.editor.ui.theme.colors.surface
-import com.vyntara.editor.ui.theme.colors.text
-import com.vyntara.editor.ui.theme.colors.primary
 import com.vyntara.editor.home.LocalLanguage
 import com.vyntara.editor.i18n.Strings
+import com.vyntara.editor.project.ProjectSummary
 import com.vyntara.editor.ui.theme.LocalAppTheme
 
-/**
- * Editor workspace shell.
- * Status:
- *  - DONE: layout landscape-friendly, preview area, timeline tracks UI, toolbar
- *  - PARTIAL: playback transport (visual only), smart blur button (placeholder action)
- *  - TODO: MediaCodec preview, real clips, keyframes, effect pipeline
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditorScreen(
@@ -75,6 +61,7 @@ fun EditorScreen(
     val colors = LocalAppTheme.current.colors
     val lang = LocalLanguage.current
     fun t(key: String) = Strings.t(lang, key)
+
     var selectedTool by remember { mutableStateOf("select") }
     var blurArmed by remember { mutableStateOf(false) }
     var statusHint by remember { mutableStateOf(t("editor_hint_start")) }
@@ -97,13 +84,16 @@ fun EditorScreen(
             },
             navigationIcon = {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = t("editor_back"), tint = colors.text)
+                    Icon(
+                        Icons.AutoMirrored.Outlined.ArrowBack,
+                        contentDescription = t("editor_back"),
+                        tint = colors.text
+                    )
                 }
             },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = colors.surface)
         )
 
-        // Preview
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -129,7 +119,6 @@ fun EditorScreen(
             }
         }
 
-        // Transport + tools
         Row(
             Modifier
                 .fillMaxWidth()
@@ -140,30 +129,27 @@ fun EditorScreen(
         ) {
             ToolBtn(Icons.Outlined.PlayArrow, t("editor_play"), selectedTool == "play") {
                 selectedTool = "play"
-                statusHint = "Reproducción: pendiente de MediaCodec"
+                statusHint = t("editor_hint_play")
             }
             ToolBtn(Icons.Outlined.Add, t("editor_import"), selectedTool == "import") {
                 selectedTool = "import"
-                statusHint = "Importación: próximamente (selector del sistema)"
+                statusHint = t("editor_hint_import")
             }
             ToolBtn(Icons.Outlined.ContentCut, t("editor_cut"), selectedTool == "cut") {
                 selectedTool = "cut"
-                statusHint = "Corte de clips: en desarrollo"
+                statusHint = t("editor_hint_cut")
             }
             ToolBtn(Icons.Outlined.BlurOn, t("editor_blur"), blurArmed) {
                 blurArmed = !blurArmed
-                statusHint = if (blurArmed)
-                    "Desenfoque inteligente armado — selecciona un clip para aplicarlo"
-                else
-                    "Desenfoque inteligente desactivado"
+                statusHint = if (blurArmed) t("editor_hint_blur_on") else t("editor_hint_blur_off")
             }
             ToolBtn(Icons.Outlined.Layers, t("editor_layers"), selectedTool == "layers") {
                 selectedTool = "layers"
-                statusHint = "Panel de capas"
+                statusHint = t("editor_hint_layers")
             }
             ToolBtn(Icons.Outlined.Tune, t("editor_props"), selectedTool == "props") {
                 selectedTool = "props"
-                statusHint = "Propiedades del elemento seleccionado"
+                statusHint = t("editor_hint_props")
             }
         }
 
@@ -177,7 +163,6 @@ fun EditorScreen(
                 .padding(horizontal = 14.dp, vertical = 4.dp)
         )
 
-        // Timeline
         Column(
             Modifier
                 .fillMaxWidth()
@@ -192,9 +177,9 @@ fun EditorScreen(
                 modifier = Modifier.padding(horizontal = 12.dp)
             )
             Spacer(Modifier.height(6.dp))
-            TimelineTrack(label = "V1", color = colors.primary.copy(alpha = 0.5f))
+            TimelineTrack(label = "V1", trackColor = colors.primary.copy(alpha = 0.5f))
             Spacer(Modifier.height(6.dp))
-            TimelineTrack(label = "A1", color = colors.secondary.copy(alpha = 0.35f))
+            TimelineTrack(label = "A1", trackColor = colors.secondary.copy(alpha = 0.35f))
         }
     }
 }
@@ -206,6 +191,7 @@ private fun ToolBtn(
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    val colors = LocalAppTheme.current.colors
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -214,13 +200,19 @@ private fun ToolBtn(
             .pointerInput(Unit) { detectTapGestures { onClick() } }
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
-        Icon(icon, contentDescription = label, tint = if (selected) colors.secondary else colors.text, modifier = Modifier.size(22.dp))
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = if (selected) colors.secondary else colors.text,
+            modifier = Modifier.size(22.dp)
+        )
         Text(label, color = colors.muted, fontSize = 9.sp)
     }
 }
 
 @Composable
-private fun TimelineTrack(label: String, color: Color) {
+private fun TimelineTrack(label: String, trackColor: Color) {
+    val colors = LocalAppTheme.current.colors
     Row(
         Modifier
             .fillMaxWidth()
@@ -237,14 +229,13 @@ private fun TimelineTrack(label: String, color: Color) {
                 .background(colors.background)
                 .horizontalScroll(rememberScrollState())
         ) {
-            // Empty track placeholder strip
             Box(
                 Modifier
                     .width(280.dp)
                     .fillMaxHeight()
                     .padding(4.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(color.copy(alpha = 0.15f))
+                    .background(trackColor.copy(alpha = 0.15f))
             )
         }
     }

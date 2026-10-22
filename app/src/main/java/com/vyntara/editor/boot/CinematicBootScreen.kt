@@ -1,6 +1,3 @@
-import com.vyntara.editor.ui.theme.LocalAppTheme
-import com.vyntara.editor.home.LocalLanguage
-import com.vyntara.editor.i18n.Strings
 package com.vyntara.editor.boot
 
 import androidx.compose.animation.core.Animatable
@@ -23,15 +20,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vyntara.editor.home.LocalLanguage
+import com.vyntara.editor.i18n.Strings
+import com.vyntara.editor.ui.theme.LocalAppTheme
 
-/**
- * Orquestador visual del arranque.
- * Delega el campo espacial a [BootSpatialField] y el logo a [BootLogo].
- * No contiene la lógica de comprobaciones (eso vive en BootViewModel).
- */
 @Composable
 fun CinematicBootScreen(
     phase: CinematicPhase,
@@ -40,6 +34,9 @@ fun CinematicBootScreen(
     onSkip: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colors = LocalAppTheme.current.colors
+    val lang = LocalLanguage.current
+
     val infinite = rememberInfiniteTransition(label = "bootPulse")
     val ambientPulse by infinite.animateFloat(
         initialValue = 0.4f,
@@ -100,7 +97,7 @@ fun CinematicBootScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(LocalAppTheme.current.colors.background)
+            .background(colors.background)
     ) {
         BootSpatialField(
             phase = phase,
@@ -120,7 +117,7 @@ fun CinematicBootScreen(
         if (showStatus && statusMessage.isNotBlank()) {
             Text(
                 text = statusMessage,
-                color = LocalAppTheme.current.colors.muted.copy(alpha = 0.85f),
+                color = colors.muted.copy(alpha = 0.85f),
                 fontSize = 12.sp,
                 letterSpacing = 0.5.sp,
                 modifier = Modifier
@@ -135,8 +132,8 @@ fun CinematicBootScreen(
             phase != CinematicPhase.FINISHED
         ) {
             Text(
-                text = Strings.t(LocalLanguage.current, "skip"),
-                color = LocalAppTheme.current.colors.text.copy(alpha = 0.45f),
+                text = Strings.t(lang, "skip"),
+                color = colors.text.copy(alpha = 0.45f),
                 fontSize = 13.sp,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
