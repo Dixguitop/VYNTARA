@@ -1,5 +1,10 @@
 package com.vyntara.editor.project
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -17,14 +23,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -46,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vyntara.editor.capabilities.DeviceProfile
 import com.vyntara.editor.home.LocalLanguage
+import com.vyntara.editor.i18n.AppLanguage
 import com.vyntara.editor.i18n.Strings
 import com.vyntara.editor.settings.AppSettings
 import com.vyntara.editor.ui.theme.LocalAppTheme
@@ -85,10 +90,8 @@ fun CreateProjectSheet(
     var error by remember { mutableStateOf<String?>(null) }
     var acceptFpsRisk by remember { mutableStateOf(false) }
 
-    var aspectExpanded by remember { mutableStateOf(false) }
-    var resExpanded by remember { mutableStateOf(false) }
-    var fpsExpanded by remember { mutableStateOf(false) }
-    var bgExpanded by remember { mutableStateOf(false) }
+    // Only one panel open at a time
+    var openPanel by remember { mutableStateOf<String?>(null) }
 
     val fpsWarning = CapabilityLimits.fpsBlockReason(fps, profile)
     val resWarning = CapabilityLimits.resolutionBlockReason(resolution.longSide, profile)
@@ -103,10 +106,10 @@ fun CreateProjectSheet(
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
-                .padding(bottom = 40.dp)
+                .padding(bottom = 36.dp)
         ) {
-            Text(t("create_title"), color = colors.text, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(20.dp))
+            Text(t("create_title"), color = colors.text, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(16.dp))
 
             OutlinedTextField(
                 value = title,
@@ -114,44 +117,37 @@ fun CreateProjectSheet(
                 label = { Text(t("create_name")) },
                 placeholder = { Text(t("create_name_hint")) },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth().height(60.dp),
-                colors = fieldColors(),
-                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, color = colors.text)
+                modifier = Modifier.fillMaxWidth(),
+                colors = fieldColors()
             )
 
-            Spacer(Modifier.height(16.dp))
-            Text(t("create_aspect"), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(8.dp))
-            DropdownField(
-                value = if (aspect == AspectPreset.CUSTOM) t("aspect_custom") else aspect.label,
-                expanded = aspectExpanded,
-                onExpandedChange = { aspectExpanded = it },
+            Spacer(Modifier.height(14.dp))
+            FieldLabel(t("create_aspect"), colors)
+            CompactPicker(
+                label = if (aspect == AspectPreset.CUSTOM) t("aspect_custom") else aspect.label,
+                expanded = openPanel == "aspect",
+                onToggle = { openPanel = if (openPanel == "aspect") null else "aspect" },
                 colors = colors
             ) {
                 AspectPreset.entries.forEach { preset ->
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                if (preset == AspectPreset.CUSTOM) t("aspect_custom") else preset.label,
-                                fontSize = 16.sp
-                            )
-                        },
-                        onClick = {
-                            aspect = preset
-                            aspectExpanded = false
-                        }
-                    )
+                    CompactOption(
+                        text = if (preset == AspectPreset.CUSTOM) t("aspect_custom") else preset.label,
+                        selected = aspect == preset,
+                        colors = colors
+                    ) {
+                        aspect = preset
+                        openPanel = null
+                    }
                 }
             }
-
             if (aspect == AspectPreset.CUSTOM) {
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
                         value = customW.toString(),
                         onValueChange = { customW = it.filter(Char::isDigit).toIntOrNull() ?: customW },
                         label = { Text(t("create_width")) },
-                        modifier = Modifier.weight(1f).height(60.dp),
+                        modifier = Modifier.weight(1f),
                         singleLine = true,
                         colors = fieldColors()
                     )
@@ -159,92 +155,76 @@ fun CreateProjectSheet(
                         value = customH.toString(),
                         onValueChange = { customH = it.filter(Char::isDigit).toIntOrNull() ?: customH },
                         label = { Text(t("create_height")) },
-                        modifier = Modifier.weight(1f).height(60.dp),
+                        modifier = Modifier.weight(1f),
                         singleLine = true,
                         colors = fieldColors()
                     )
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
-            Text(t("create_resolution"), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(8.dp))
-            DropdownField(
-                value = resolution.label,
-                expanded = resExpanded,
-                onExpandedChange = { resExpanded = it },
+            Spacer(Modifier.height(12.dp))
+            FieldLabel(t("create_resolution"), colors)
+            CompactPicker(
+                label = resolution.label,
+                expanded = openPanel == "res",
+                onToggle = { openPanel = if (openPanel == "res") null else "res" },
                 colors = colors
             ) {
                 ResolutionPreset.entries.forEach { preset ->
                     val warn = CapabilityLimits.resolutionBlockReason(preset.longSide, profile)
-                    DropdownMenuItem(
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(preset.label, fontSize = 16.sp)
-                                if (warn != null) {
-                                    Spacer(Modifier.size(8.dp))
-                                    Icon(Icons.Outlined.Warning, null, tint = colors.danger, modifier = Modifier.size(18.dp))
-                                }
-                            }
-                        },
-                        onClick = {
-                            resolution = preset
-                            resExpanded = false
-                            acceptFpsRisk = false
-                        }
-                    )
+                    CompactOption(
+                        text = preset.label,
+                        selected = resolution == preset,
+                        colors = colors,
+                        trailingWarn = warn != null
+                    ) {
+                        resolution = preset
+                        openPanel = null
+                        acceptFpsRisk = false
+                    }
                 }
             }
             if (resWarning != null) {
-                WarningRow(resWarning, colors)
+                RiskNote(resWarning, colors)
             }
 
-            Spacer(Modifier.height(16.dp))
-            Text(t("create_fps"), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(8.dp))
-            DropdownField(
-                value = "$fps fps",
-                expanded = fpsExpanded,
-                onExpandedChange = { fpsExpanded = it },
+            Spacer(Modifier.height(12.dp))
+            FieldLabel(t("create_fps"), colors)
+            CompactPicker(
+                label = "$fps fps",
+                expanded = openPanel == "fps",
+                onToggle = { openPanel = if (openPanel == "fps") null else "fps" },
                 colors = colors
             ) {
                 FPS_OPTIONS.forEach { value ->
                     val warn = CapabilityLimits.fpsBlockReason(value, profile)
-                    DropdownMenuItem(
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("$value fps", fontSize = 16.sp)
-                                if (warn != null) {
-                                    Spacer(Modifier.size(8.dp))
-                                    Icon(Icons.Outlined.Warning, null, tint = Color(0xFFFBBF24), modifier = Modifier.size(18.dp))
-                                }
-                            }
-                        },
-                        onClick = {
-                            fps = value
-                            fpsExpanded = false
-                            acceptFpsRisk = false
-                        }
-                    )
+                    CompactOption(
+                        text = "$value fps",
+                        selected = fps == value,
+                        colors = colors,
+                        trailingWarn = warn != null
+                    ) {
+                        fps = value
+                        openPanel = null
+                        acceptFpsRisk = false
+                    }
                 }
             }
             if (fpsWarning != null) {
-                WarningRow(
-                    if (lang == com.vyntara.editor.i18n.AppLanguage.ENGLISH)
-                        "Not optimal on this device. App may run slower. You can still use it at your own risk."
+                RiskNote(
+                    if (lang == AppLanguage.ENGLISH)
+                        "Not optimal on this device. May run slower. You can continue at your own risk."
                     else
-                        "No es optimo en este dispositivo. La app puede ir mas lenta. Puedes usarlo bajo tu propio riesgo.",
+                        "No es optimo en este dispositivo. Puede ir mas lenta. Continua bajo tu propio riesgo.",
                     colors,
-                    allowContinue = true,
+                    acceptLabel = if (lang == AppLanguage.ENGLISH) "I accept the risk" else "Acepto el riesgo",
                     accepted = acceptFpsRisk,
-                    onAccept = { acceptFpsRisk = true },
-                    acceptLabel = if (lang == com.vyntara.editor.i18n.AppLanguage.ENGLISH) "I accept the risk" else "Acepto el riesgo"
+                    onAccept = { acceptFpsRisk = true }
                 )
             }
 
-            Spacer(Modifier.height(16.dp))
-            Text(t("create_background"), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(12.dp))
+            FieldLabel(t("create_background"), colors)
             val bgLabel = when (background) {
                 BackgroundPreset.BLACK -> t("bg_black")
                 BackgroundPreset.WHITE -> t("bg_white")
@@ -254,15 +234,15 @@ fun CreateProjectSheet(
                 BackgroundPreset.TRANSPARENT -> t("bg_transparent")
                 BackgroundPreset.CUSTOM -> t("bg_custom")
             }
-            DropdownField(
-                value = bgLabel,
-                expanded = bgExpanded,
-                onExpandedChange = { bgExpanded = it },
+            CompactPicker(
+                label = bgLabel,
+                expanded = openPanel == "bg",
+                onToggle = { openPanel = if (openPanel == "bg") null else "bg" },
                 colors = colors,
                 leading = {
                     Box(
                         Modifier
-                            .size(22.dp)
+                            .size(18.dp)
                             .clip(CircleShape)
                             .background(
                                 when (background) {
@@ -275,7 +255,7 @@ fun CreateProjectSheet(
                                     else -> background.color ?: Color.DarkGray
                                 }
                             )
-                            .border(1.dp, colors.muted.copy(alpha = 0.4f), CircleShape)
+                            .border(1.dp, colors.muted.copy(alpha = 0.35f), CircleShape)
                     )
                 }
             ) {
@@ -289,28 +269,19 @@ fun CreateProjectSheet(
                         BackgroundPreset.TRANSPARENT -> t("bg_transparent")
                         BackgroundPreset.CUSTOM -> t("bg_custom")
                     }
-                    DropdownMenuItem(
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    Modifier
-                                        .size(18.dp)
-                                        .clip(CircleShape)
-                                        .background(preset.color ?: Color(0xFF2A2A35))
-                                )
-                                Spacer(Modifier.size(10.dp))
-                                Text(label, fontSize = 16.sp)
-                            }
-                        },
-                        onClick = {
-                            background = preset
-                            bgExpanded = false
-                        }
-                    )
+                    CompactOption(
+                        text = label,
+                        selected = background == preset,
+                        colors = colors,
+                        leadingColor = preset.color ?: Color(0xFF2A2A35)
+                    ) {
+                        background = preset
+                        openPanel = null
+                    }
                 }
             }
             if (background == BackgroundPreset.CUSTOM) {
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = customColorHex,
                     onValueChange = {
@@ -319,29 +290,27 @@ fun CreateProjectSheet(
                     label = { Text(t("create_color_hex")) },
                     prefix = { Text("#", color = colors.muted) },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth().height(60.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     colors = fieldColors()
                 )
             }
 
             error?.let {
-                Spacer(Modifier.height(12.dp))
-                Text(it, color = colors.danger, fontSize = 14.sp)
+                Spacer(Modifier.height(10.dp))
+                Text(it, color = colors.danger, fontSize = 13.sp)
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(20.dp))
             Button(
                 onClick = {
                     val longSide = if (aspect == AspectPreset.CUSTOM) maxOf(customW, customH) else resolution.longSide
-                    val hardResBlock = longSide > 2160 || longSide < 16
                     when {
-                        hardResBlock -> error = "16–2160"
-                        fpsWarning != null && !acceptFpsRisk -> {
-                            error = if (lang == com.vyntara.editor.i18n.AppLanguage.ENGLISH)
-                                "Confirm that you accept the FPS risk"
+                        longSide !in 16..2160 -> error = "16–2160"
+                        fpsWarning != null && !acceptFpsRisk ->
+                            error = if (lang == AppLanguage.ENGLISH)
+                                "Accept the FPS risk to continue"
                             else
-                                "Confirma que aceptas el riesgo de FPS"
-                        }
+                                "Acepta el riesgo de FPS para continuar"
                         aspect == AspectPreset.CUSTOM && (customW < 16 || customH < 16) ->
                             error = "16x16 min"
                         else -> {
@@ -366,7 +335,7 @@ fun CreateProjectSheet(
                         }
                     }
                 },
-                modifier = Modifier.fillMaxWidth().height(56.dp),
+                modifier = Modifier.fillMaxWidth().height(52.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = colors.primary)
             ) {
@@ -376,48 +345,106 @@ fun CreateProjectSheet(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DropdownField(
-    value: String,
+private fun FieldLabel(text: String, colors: VyntaraColors) {
+    Text(text, color = colors.muted, fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(bottom = 6.dp))
+}
+
+@Composable
+private fun CompactPicker(
+    label: String,
     expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
+    onToggle: () -> Unit,
     colors: VyntaraColors,
     leading: (@Composable () -> Unit)? = null,
-    menu: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
+    content: @Composable () -> Unit
 ) {
-    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = onExpandedChange) {
-        OutlinedTextField(
-            value = value,
-            onValueChange = {},
-            readOnly = true,
-            leadingIcon = leading,
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-            modifier = Modifier
+    Column {
+        Row(
+            Modifier
                 .fillMaxWidth()
-                .menuAnchor()
-                .height(56.dp),
-            colors = fieldColors(),
-            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 16.sp, color = colors.text)
-        )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { onExpandedChange(false) },
-            modifier = Modifier.background(colors.card)
+                .height(48.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(colors.card)
+                .border(1.dp, colors.muted.copy(alpha = 0.28f), RoundedCornerShape(12.dp))
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            menu()
+            if (leading != null) {
+                leading()
+                Spacer(Modifier.size(10.dp))
+            }
+            Text(label, color = colors.text, fontSize = 15.sp, modifier = Modifier.weight(1f))
+            Icon(
+                if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                contentDescription = null,
+                tint = colors.muted,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .heightIn(max = 180.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.card)
+                    .border(1.dp, colors.muted.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
+                    .verticalScroll(rememberScrollState())
+            ) {
+                content()
+            }
         }
     }
 }
 
 @Composable
-private fun WarningRow(
+private fun CompactOption(
+    text: String,
+    selected: Boolean,
+    colors: VyntaraColors,
+    trailingWarn: Boolean = false,
+    leadingColor: Color? = null,
+    onClick: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .background(if (selected) colors.primary.copy(alpha = 0.18f) else Color.Transparent)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (leadingColor != null) {
+            Box(Modifier.size(14.dp).clip(CircleShape).background(leadingColor).border(1.dp, colors.muted.copy(alpha = 0.3f), CircleShape))
+            Spacer(Modifier.size(10.dp))
+        }
+        Text(
+            text,
+            color = if (selected) colors.primary else colors.text,
+            fontSize = 15.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            modifier = Modifier.weight(1f)
+        )
+        if (trailingWarn) {
+            Icon(Icons.Outlined.Warning, null, tint = Color(0xFFFBBF24), modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun RiskNote(
     message: String,
     colors: VyntaraColors,
-    allowContinue: Boolean = false,
+    acceptLabel: String? = null,
     accepted: Boolean = false,
-    onAccept: () -> Unit = {},
-    acceptLabel: String = ""
+    onAccept: () -> Unit = {}
 ) {
     Column(
         Modifier
@@ -428,20 +455,18 @@ private fun WarningRow(
             .padding(12.dp)
     ) {
         Row(verticalAlignment = Alignment.Top) {
-            Icon(Icons.Outlined.Warning, null, tint = Color(0xFFFBBF24), modifier = Modifier.size(20.dp))
+            Icon(Icons.Outlined.Warning, null, tint = Color(0xFFFBBF24), modifier = Modifier.size(18.dp))
             Spacer(Modifier.size(8.dp))
-            Text(message, color = colors.muted, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            Text(message, color = colors.muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
         }
-        if (allowContinue) {
+        if (acceptLabel != null) {
             Spacer(Modifier.height(8.dp))
             Text(
-                text = if (accepted) acceptLabel else acceptLabel,
+                acceptLabel,
                 color = if (accepted) colors.success else colors.primary,
-                fontSize = 14.sp,
+                fontSize = 13.sp,
                 fontWeight = FontWeight.Medium,
-                modifier = Modifier
-                    .clickable(onClick = onAccept)
-                    .padding(vertical = 8.dp)
+                modifier = Modifier.clickable(onClick = onAccept).padding(vertical = 6.dp)
             )
         }
     }
