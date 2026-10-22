@@ -15,5 +15,6 @@ jobs:
       - run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: vyntara-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Vyntara-APK
+          path: app/build/outputs/apk/debug/Vyntara.apk
+          if-no-files-found: error
