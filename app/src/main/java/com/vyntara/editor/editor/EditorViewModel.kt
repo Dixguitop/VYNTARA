@@ -1,6 +1,9 @@
 package com.vyntara.editor.editor
 
 import androidx.lifecycle.ViewModel
+import com.vyntara.editor.editor.effects.EffectCatalog
+import com.vyntara.editor.editor.effects.EffectStatus
+import com.vyntara.editor.editor.media.ImportedMedia
 import com.vyntara.editor.project.ProjectSummary
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +28,11 @@ class EditorViewModel : ViewModel() {
     )
     val document: StateFlow<EditorDocument> = _doc.asStateFlow()
 
+    private val _toast = MutableStateFlow<String?>(null)
+    val toast: StateFlow<String?> = _toast.asStateFlow()
+
+    fun clearToast() { _toast.value = null }
+
     fun load(project: ProjectSummary) {
         val bg = EditorClip(
             id = "bg",
@@ -35,14 +43,6 @@ class EditorViewModel : ViewModel() {
             durationSec = 10f,
             locked = true
         )
-        val v1 = EditorClip(
-            id = "v1",
-            name = "Video 1",
-            type = LayerType.VIDEO,
-            trackIndex = 1,
-            startSec = 0f,
-            durationSec = 5f
-        )
         _doc.value = EditorDocument(
             projectId = project.id,
             title = project.title,
@@ -51,12 +51,67 @@ class EditorViewModel : ViewModel() {
             fps = project.fps,
             backgroundArgb = project.backgroundArgb,
             durationSec = 10f,
-            clips = listOf(bg, v1),
-            selectedIds = setOf("v1"),
+            clips = listOf(bg),
+            selectedIds = emptySet(),
             saveStatus = SaveStatus.SAVED
         )
         undoStack.clear()
         redoStack.clear()
+    }
+
+    fun importMedia(media: ImportedMedia) {
+        val type = when {
+            media.isVideo -> LayerType.VIDEO
+            media.isAudio -> LayerType.AUDIO
+            media.isImage -> LayerType.IMAGE
+            else -> LayerType.VIDEO
+        }
+        val track = when (type) {
+            LayerType.AUDIO -> (document.value.clips.filter { it.type == LayerType.AUDIO }.maxOfOrNull { it.trackIndex } ?: 9) + 1
+            else -> (document.value.clips.filter { it.type != LayerType.AUDIO }.maxOfOrNull { it.trackIndex } ?: 0) + 1
+        }
+        // Duration unknown until MediaMetadataRetriever — use placeholder 5s for video/image, mark in name
+        val duration = when (type) {
+            LayerType.IMAGE -> 3f
+            LayerType.AUDIO -> 5f
+            else -> 5f
+        }
+        val clip = EditorClip(
+            id = UUID.randomUUID().toString().take(8),
+            name = media.displayName.take(24).ifBlank { type.name },
+            type = type,
+            trackIndex = track,
+            startSec = document.value.playheadSec,
+            durationSec = duration
+            // mediaUri could be stored when model extended
+        )
+        dispatch(EditorAction.AddClip(clip))
+        _toast.value = "Imported: ${clip.name}"
+    }
+
+    fun applyEffect(effectId: String) {
+        val def = EffectCatalog.all.find { it.id == effectId } ?: return
+        if (def.status != EffectStatus.READY) {
+            _toast.value = "Not ready: ${def.name}"
+            return
+        }
+        val clipId = document.value.selectedIds.firstOrNull() ?: run {
+            _toast.value = "Select a clip first"
+            return
+        }
+        dispatch(
+            EditorAction.AddEffect(
+                clipId,
+                EffectInstance(
+                    id = UUID.randomUUID().toString().take(8),
+                    name = def.nameEn,
+                    category = def.category,
+                    intensity = def.defaultIntensity,
+                    radius = def.defaultRadius
+                )
+            )
+        )
+        _toast.value = "Applied: ${def.name}"
     }
 
     fun dispatch(action: EditorAction) {
@@ -114,10 +169,9 @@ class EditorViewModel : ViewModel() {
                 _doc.update { it.copy(saveStatus = SaveStatus.SAVED) }
                 return
             }
-            else -> { /* structural edits below */ }
+            else -> {}
         }
 
-        // Structural edits — push undo
         val before = _doc.value
         val after = applyStructural(before, action) ?: return
         if (after != before) {
@@ -128,12 +182,20 @@ class EditorViewModel : ViewModel() {
         }
     }
 
+    private fun publish(doc: EditorDocument) {
+        _doc.value = doc.copy(canUndo = undoStack.isNotEmpty(), canRedo = redoStack.isNotEmpty())
+    }
+
     private fun applyStructural(doc: EditorDocument, action: EditorAction): EditorDocument? {
         return when (action) {
             is EditorAction.UpdateClip -> doc.copy(
                 clips = doc.clips.map { if (it.id == action.clip.id) action.clip else it }
             )
-            is EditorAction.AddClip -> doc.copy(clips = doc.clips + action.clip, selectedIds = setOf(action.clip.id))
+            is EditorAction.AddClip -> doc.copy(
+                clips = doc.clips + action.clip,
+                selectedIds = setOf(action.clip.id),
+                durationSec = maxOf(doc.durationSec, action.clip.endSec + 1f)
+            )
             is EditorAction.DeleteSelected -> {
                 val ids = action.ids.filter { id -> doc.clips.any { it.id == id && !it.locked } }.toSet()
                 doc.copy(clips = doc.clips.filterNot { it.id in ids }, selectedIds = emptySet())
@@ -159,8 +221,8 @@ class EditorViewModel : ViewModel() {
                 clips = doc.clips.map { c ->
                     if (c.id != action.clipId) c
                     else c.copy(
-                        effects = c.effects + action.effect.copy(id = UUID.randomUUID().toString().take(8)),
-                        smartBlur = c.smartBlur || action.effect.name.contains("Smart", true),
+                        effects = c.effects + action.effect,
+                        smartBlur = c.smartBlur || action.effect.name.contains("Blur", true),
                         blurRadius = if (action.effect.name.contains("Blur", true)) action.effect.radius else c.blurRadius
                     )
                 }
@@ -177,11 +239,4 @@ class EditorViewModel : ViewModel() {
             else -> null
         }
     }
-
-    private fun publish(doc: EditorDocument) {
-        _doc.value = doc.copy(canUndo = undoStack.isNotEmpty(), canRedo = redoStack.isNotEmpty())
-    }
-
-    fun canUndo(): Boolean = undoStack.isNotEmpty()
-    fun canRedo(): Boolean = redoStack.isNotEmpty()
 }
