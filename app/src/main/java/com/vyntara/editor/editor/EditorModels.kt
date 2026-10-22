@@ -31,6 +31,12 @@ data class EditorClip(
     val startSec: Float,
     /** Duration in seconds */
     val durationSec: Float,
+    /** Content URI string when imported from device */
+    val mediaUri: String? = null,
+    val mediaWidth: Int? = null,
+    val mediaHeight: Int? = null,
+    /** Source media duration if known from metadata */
+    val sourceDurationSec: Float? = null,
     val visible: Boolean = true,
     val locked: Boolean = false,
     val muted: Boolean = false,

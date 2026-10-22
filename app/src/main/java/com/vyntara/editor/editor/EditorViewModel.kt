@@ -1,20 +1,35 @@
 package com.vyntara.editor.editor
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Environment
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import com.vyntara.editor.editor.effects.EffectCatalog
 import com.vyntara.editor.editor.effects.EffectStatus
-import com.vyntara.editor.editor.media.ImportedMedia
+import com.vyntara.editor.editor.media.EffectRenderer
+import com.vyntara.editor.editor.media.ExportPipeline
+import com.vyntara.editor.editor.media.ExportProgress
+import com.vyntara.editor.editor.media.MediaProbe
+import com.vyntara.editor.editor.media.PlaybackEngine
 import com.vyntara.editor.project.ProjectSummary
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.io.File
 import java.util.UUID
 
-class EditorViewModel : ViewModel() {
+class EditorViewModel(app: Application) : AndroidViewModel(app) {
 
     private val undoStack = ArrayDeque<EditorDocument>(32)
     private val redoStack = ArrayDeque<EditorDocument>(32)
+    private val playback = PlaybackEngine(app)
 
     private val _doc = MutableStateFlow(
         EditorDocument(
@@ -31,9 +46,25 @@ class EditorViewModel : ViewModel() {
     private val _toast = MutableStateFlow<String?>(null)
     val toast: StateFlow<String?> = _toast.asStateFlow()
 
+    private val _previewBitmap = MutableStateFlow<Bitmap?>(null)
+    val previewBitmap: StateFlow<Bitmap?> = _previewBitmap.asStateFlow()
+
+    private val _importing = MutableStateFlow(false)
+    val importing: StateFlow<Boolean> = _importing.asStateFlow()
+
+    private val _exportProgress = MutableStateFlow<ExportProgress?>(null)
+    val exportProgress: StateFlow<ExportProgress?> = _exportProgress.asStateFlow()
+
+    private val _lastExportPath = MutableStateFlow<String?>(null)
+    val lastExportPath: StateFlow<String?> = _lastExportPath.asStateFlow()
+
+    private var previewJob: Job? = null
+    private var playJob: Job? = null
+
     fun clearToast() { _toast.value = null }
 
     fun load(project: ProjectSummary) {
+        stopPlayback()
         val bg = EditorClip(
             id = "bg",
             name = "Background",
@@ -57,36 +88,95 @@ class EditorViewModel : ViewModel() {
         )
         undoStack.clear()
         redoStack.clear()
+        _previewBitmap.value = null
+        _exportProgress.value = null
+        _lastExportPath.value = null
     }
 
-    fun importMedia(media: ImportedMedia) {
-        val type = when {
-            media.isVideo -> LayerType.VIDEO
-            media.isAudio -> LayerType.AUDIO
-            media.isImage -> LayerType.IMAGE
-            else -> LayerType.VIDEO
+    fun importUri(uri: Uri) {
+        viewModelScope.launch {
+            _importing.value = true
+            try {
+                val probe = MediaProbe.probe(getApplication(), uri)
+                val type = when {
+                    probe.isVideo -> LayerType.VIDEO
+                    probe.isAudio -> LayerType.AUDIO
+                    probe.isImage -> LayerType.IMAGE
+                    else -> LayerType.VIDEO
+                }
+                val durationSec = when {
+                    probe.durationMs != null && probe.durationMs > 0 ->
+                        (probe.durationMs / 1000f).coerceAtLeast(0.1f)
+                    probe.isImage -> 3f
+                    else -> 5f
+                }
+                val track = when (type) {
+                    LayerType.AUDIO ->
+                        (document.value.clips.filter { it.type == LayerType.AUDIO }
+                            .maxOfOrNull { it.trackIndex } ?: 9) + 1
+                    else ->
+                        (document.value.clips.filter { it.type != LayerType.AUDIO }
+                            .maxOfOrNull { it.trackIndex } ?: 0) + 1
+                }
+                val clip = EditorClip(
+                    id = UUID.randomUUID().toString().take(8),
+                    name = probe.displayName.take(28),
+                    type = type,
+                    trackIndex = track,
+                    startSec = document.value.playheadSec,
+                    durationSec = durationSec,
+                    mediaUri = probe.uri,
+                    mediaWidth = probe.width,
+                    mediaHeight = probe.height,
+                    sourceDurationSec = probe.durationMs?.let { it / 1000f }
+                )
+                dispatch(EditorAction.AddClip(clip))
+                val meta = buildString {
+                    append(probe.displayName)
+                    probe.width?.let { w -> probe.height?.let { h -> append(" · ${w}x$h") } }
+                    probe.durationMs?.let { append(" · ${"%.1f".format(it / 1000f)}s") }
+                }
+                _toast.value = "Imported: $meta"
+                refreshPreview()
+            } catch (e: Exception) {
+                _toast.value = "Import failed: ${e.message ?: "error"}"
+            } finally {
+                _importing.value = false
+            }
         }
-        val track = when (type) {
-            LayerType.AUDIO -> (document.value.clips.filter { it.type == LayerType.AUDIO }.maxOfOrNull { it.trackIndex } ?: 9) + 1
-            else -> (document.value.clips.filter { it.type != LayerType.AUDIO }.maxOfOrNull { it.trackIndex } ?: 0) + 1
+    }
+
+    /** Active A/V clip under playhead for ExoPlayer. */
+    private fun primaryMediaClip(doc: EditorDocument = document.value): EditorClip? {
+        return doc.clips
+            .filter { it.visible && it.mediaUri != null && (it.type == LayerType.VIDEO || it.type == LayerType.AUDIO) }
+            .filter { doc.playheadSec >= it.startSec && doc.playheadSec < it.endSec }
+            .maxByOrNull { it.trackIndex }
+    }
+
+    fun refreshPreview() {
+        previewJob?.cancel()
+        previewJob = viewModelScope.launch {
+            val doc = document.value
+            // While ExoPlayer is playing video, still update effect overlay stills less often
+            val active = doc.clips
+                .filter { it.visible && it.type != LayerType.SOLID && it.mediaUri != null }
+                .filter { doc.playheadSec >= it.startSec && doc.playheadSec < it.endSec }
+                .maxByOrNull { it.trackIndex }
+            if (active?.mediaUri == null) {
+                _previewBitmap.value = null
+                return@launch
+            }
+            val localTimeMs = ((doc.playheadSec - active.startSec) * 1000f).toLong().coerceAtLeast(0)
+            var bmp = MediaProbe.decodePreviewFrame(
+                getApplication(),
+                Uri.parse(active.mediaUri),
+                localTimeMs,
+                maxSide = 720
+            ) ?: return@launch
+            bmp = EffectRenderer.apply(bmp, active)
+            _previewBitmap.value = bmp
         }
-        // Duration unknown until MediaMetadataRetriever — use placeholder 5s for video/image, mark in name
-        val duration = when (type) {
-            LayerType.IMAGE -> 3f
-            LayerType.AUDIO -> 5f
-            else -> 5f
-        }
-        val clip = EditorClip(
-            id = UUID.randomUUID().toString().take(8),
-            name = media.displayName.take(24).ifBlank { type.name },
-            type = type,
-            trackIndex = track,
-            startSec = document.value.playheadSec,
-            durationSec = duration
-            // mediaUri could be stored when model extended
-        )
-        dispatch(EditorAction.AddClip(clip))
-        _toast.value = "Imported: ${clip.name}"
     }
 
     fun applyEffect(effectId: String) {
@@ -112,6 +202,114 @@ class EditorViewModel : ViewModel() {
             )
         )
         _toast.value = "Applied: ${def.name}"
+        refreshPreview()
+    }
+
+    fun stepFrame(delta: Int) {
+        stopPlayback()
+        val fps = document.value.fps.coerceAtLeast(1)
+        val step = 1f / fps
+        dispatch(EditorAction.SetPlayhead(document.value.playheadSec + delta * step))
+        refreshPreview()
+    }
+
+    fun togglePlay() {
+        val doc = document.value
+        if (doc.isPlaying) {
+            stopPlayback()
+        } else {
+            startPlayback()
+        }
+    }
+
+    private fun startPlayback() {
+        val doc = document.value
+        val clip = primaryMediaClip(doc)
+        playJob?.cancel()
+        _doc.update { it.copy(isPlaying = true) }
+
+        if (clip?.mediaUri != null && (clip.type == LayerType.VIDEO || clip.type == LayerType.AUDIO)) {
+            // Fluid player path with A/V sync
+            val localMs = ((doc.playheadSec - clip.startSec) * 1000f).toLong().coerceAtLeast(0)
+            playback.setMedia(clip.mediaUri, autoPlay = true)
+            playback.seekToMs(localMs)
+            playJob = viewModelScope.launch {
+                while (isActive && document.value.isPlaying) {
+                    playback.pollPosition()
+                    val pos = playback.positionMs.value / 1000f
+                    val timelinePos = (clip.startSec + pos).coerceIn(0f, document.value.durationSec)
+                    _doc.update { it.copy(playheadSec = timelinePos) }
+                    // Still frame with effects ~5 fps while playing (player shows smooth video separately if surface used)
+                    if (System.currentTimeMillis() % 200 < 50) refreshPreview()
+                    if (timelinePos >= clip.endSec - 0.04f) {
+                        if (document.value.loop) {
+                            playback.seekToMs(0)
+                            _doc.update { it.copy(playheadSec = clip.startSec) }
+                        } else {
+                            stopPlayback()
+                            break
+                        }
+                    }
+                    delay(16)
+                }
+            }
+        } else {
+            // Image / no media: clock only + frame refresh
+            playJob = viewModelScope.launch {
+                while (isActive && document.value.isPlaying) {
+                    delay(33)
+                    val next = document.value.playheadSec + 0.033f
+                    if (next >= document.value.durationSec) {
+                        if (document.value.loop) {
+                            _doc.update { it.copy(playheadSec = 0f) }
+                        } else {
+                            _doc.update { it.copy(playheadSec = document.value.durationSec, isPlaying = false) }
+                            break
+                        }
+                    } else {
+                        _doc.update { it.copy(playheadSec = next) }
+                    }
+                    refreshPreview()
+                }
+            }
+        }
+    }
+
+    private fun stopPlayback() {
+        playJob?.cancel()
+        playJob = null
+        playback.pause()
+        _doc.update { it.copy(isPlaying = false) }
+    }
+
+    fun export() {
+        if (_exportProgress.value != null &&
+            (_exportProgress.value?.frame ?: 0) < (_exportProgress.value?.totalFrames ?: 1)
+        ) {
+            _toast.value = "Export already running"
+            return
+        }
+        viewModelScope.launch {
+            stopPlayback()
+            val doc = document.value
+            val movies = getApplication<Application>().getExternalFilesDir(Environment.DIRECTORY_MOVIES)
+                ?: getApplication<Application>().filesDir
+            if (!movies.exists()) movies.mkdirs()
+            val out = File(movies, "vyntara_${doc.projectId}_${System.currentTimeMillis()}.mp4")
+            _exportProgress.value = ExportProgress(0, 1, "Starting…")
+            val result = ExportPipeline.export(getApplication(), doc, out) { p ->
+                _exportProgress.value = p
+            }
+            result.onSuccess { file ->
+                _lastExportPath.value = file.absolutePath
+                _exportProgress.value = ExportProgress(1, 1, "Saved")
+                _toast.value = "Exported: ${file.name}"
+                dispatch(EditorAction.MarkSaved)
+            }.onFailure { e ->
+                _exportProgress.value = null
+                _toast.value = "Export failed: ${e.message ?: "error"}"
+            }
+        }
     }
 
     fun dispatch(action: EditorAction) {
@@ -132,10 +330,16 @@ class EditorViewModel : ViewModel() {
             }
             is EditorAction.SetPlayhead -> {
                 _doc.update { it.copy(playheadSec = action.sec.coerceIn(0f, it.durationSec)) }
+                val clip = primaryMediaClip()
+                if (clip?.mediaUri != null && !document.value.isPlaying) {
+                    val localMs = ((action.sec - clip.startSec) * 1000f).toLong().coerceAtLeast(0)
+                    playback.setMedia(clip.mediaUri, autoPlay = false)
+                    playback.seekToMs(localMs)
+                }
                 return
             }
             is EditorAction.TogglePlay -> {
-                _doc.update { it.copy(isPlaying = !it.isPlaying) }
+                togglePlay()
                 return
             }
             is EditorAction.ToggleLoop -> {
@@ -210,7 +414,11 @@ class EditorViewModel : ViewModel() {
                     id = UUID.randomUUID().toString().take(8),
                     name = clip.name + " B",
                     startSec = doc.playheadSec,
-                    durationSec = rightDur
+                    durationSec = rightDur,
+                    mediaUri = clip.mediaUri,
+                    mediaWidth = clip.mediaWidth,
+                    mediaHeight = clip.mediaHeight,
+                    sourceDurationSec = clip.sourceDurationSec
                 )
                 doc.copy(
                     clips = doc.clips.flatMap { if (it.id == clip.id) listOf(left, right) else listOf(it) },
@@ -238,5 +446,11 @@ class EditorViewModel : ViewModel() {
             is EditorAction.SetTitle -> doc.copy(title = action.title)
             else -> null
         }
+    }
+
+    override fun onCleared() {
+        stopPlayback()
+        playback.release()
+        super.onCleared()
     }
 }

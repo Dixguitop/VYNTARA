@@ -80,6 +80,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -92,7 +95,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vyntara.editor.editor.effects.EffectCatalog
 import com.vyntara.editor.editor.effects.EffectStatus
-import com.vyntara.editor.editor.media.ImportedMedia
 import com.vyntara.editor.home.LocalLanguage
 import com.vyntara.editor.i18n.AppLanguage
 import com.vyntara.editor.project.ProjectSummary
@@ -125,6 +127,10 @@ fun EditorScreen(
     LaunchedEffect(project.id) { vm.load(project) }
     val doc by vm.document.collectAsStateWithLifecycle()
     val toast by vm.toast.collectAsStateWithLifecycle()
+    val previewBitmap by vm.previewBitmap.collectAsStateWithLifecycle()
+    val importing by vm.importing.collectAsStateWithLifecycle()
+    val exportProgress by vm.exportProgress.collectAsStateWithLifecycle()
+    val lastExportPath by vm.lastExportPath.collectAsStateWithLifecycle()
 
     var panel by remember { mutableStateOf(ToolPanel.TIMELINE) }
     var showExitDialog by remember { mutableStateOf(false) }
@@ -139,18 +145,7 @@ fun EditorScreen(
                 Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         } catch (_: SecurityException) { /* some providers disallow persist */ }
-        val mime = ctx.contentResolver.getType(uri) ?: ""
-        val name = uri.lastPathSegment?.substringAfterLast('/') ?: "media"
-        vm.importMedia(
-            ImportedMedia(
-                uri = uri.toString(),
-                displayName = name,
-                mimeType = mime,
-                isVideo = mime.startsWith("video"),
-                isAudio = mime.startsWith("audio"),
-                isImage = mime.startsWith("image")
-            )
-        )
+        vm.importUri(uri)
         panel = ToolPanel.TIMELINE
     }
 
@@ -164,18 +159,8 @@ fun EditorScreen(
         else requestExit()
     }
 
-    LaunchedEffect(doc.isPlaying) {
-        while (doc.isPlaying) {
-            delay(33)
-            val next = doc.playheadSec + 0.033f
-            if (next >= doc.durationSec) {
-                if (doc.loop) vm.dispatch(EditorAction.SetPlayhead(0f))
-                else {
-                    vm.dispatch(EditorAction.SetPlayhead(doc.durationSec))
-                    vm.dispatch(EditorAction.TogglePlay)
-                }
-            } else vm.dispatch(EditorAction.SetPlayhead(next))
-        }
+        LaunchedEffect(doc.playheadSec, doc.selectedIds, doc.isPlaying) {
+        if (!doc.isPlaying) vm.refreshPreview()
     }
 
     Box(modifier.fillMaxSize().background(colors.background)) {
@@ -191,7 +176,13 @@ fun EditorScreen(
                     onDispatch = vm::dispatch,
                     onApplyEffect = vm::applyEffect,
                     onImport = { picker.launch(arrayOf("video/*", "image/*", "audio/*")) },
-                    onBack = ::requestExit
+                    onBack = ::requestExit,
+                    onStep = vm::stepFrame,
+                    previewBitmap = previewBitmap,
+                    onExport = vm::export,
+                    exportLabel = exportProgress?.let { p ->
+                        if (p.totalFrames > 0 && p.frame < p.totalFrames) "${(p.fraction * 100).toInt()}%" else null
+                    }
                 )
             } else {
                 PortraitEditor(
@@ -203,7 +194,13 @@ fun EditorScreen(
                     onDispatch = vm::dispatch,
                     onApplyEffect = vm::applyEffect,
                     onImport = { picker.launch(arrayOf("video/*", "image/*", "audio/*")) },
-                    onBack = ::requestExit
+                    onBack = ::requestExit,
+                    onStep = vm::stepFrame,
+                    previewBitmap = previewBitmap,
+                    onExport = vm::export,
+                    exportLabel = exportProgress?.let { p ->
+                        if (p.totalFrames > 0 && p.frame < p.totalFrames) "${(p.fraction * 100).toInt()}%" else null
+                    }
                 )
             }
         }
@@ -274,12 +271,16 @@ private fun PortraitEditor(
     onDispatch: (EditorAction) -> Unit,
     onApplyEffect: (String) -> Unit,
     onImport: () -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onStep: (Int) -> Unit,
+    previewBitmap: android.graphics.Bitmap?,
+    onExport: () -> Unit = {},
+    exportLabel: String? = null
 ) {
     Column(Modifier.fillMaxSize()) {
-        EditorTopBar(doc, colors, lang, onDispatch, onBack)
-        Monitor(doc, colors, lang, Modifier.fillMaxWidth().weight(0.36f))
-        TransportBar(doc, colors, onDispatch)
+        EditorTopBar(doc, colors, lang, onDispatch, onBack, onExport, exportLabel)
+        Monitor(doc, colors, lang, Modifier.fillMaxWidth().weight(0.36f), previewBitmap)
+        TransportBar(doc, colors, onDispatch, onStep)
         TimelineStrip(doc, colors, Modifier.fillMaxWidth().height(120.dp), onDispatch)
         ToolStrip(panel, colors, lang, onPanel, onImport, onDispatch, doc)
         AnimatedContent(
@@ -303,10 +304,14 @@ private fun LandscapeEditor(
     onDispatch: (EditorAction) -> Unit,
     onApplyEffect: (String) -> Unit,
     onImport: () -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onStep: (Int) -> Unit,
+    previewBitmap: android.graphics.Bitmap?,
+    onExport: () -> Unit = {},
+    exportLabel: String? = null
 ) {
     Column(Modifier.fillMaxSize()) {
-        EditorTopBar(doc, colors, lang, onDispatch, onBack)
+        EditorTopBar(doc, colors, lang, onDispatch, onBack, onExport, exportLabel)
         Row(Modifier.weight(1f).fillMaxWidth()) {
             // Left tool rail
             Column(
@@ -332,8 +337,8 @@ private fun LandscapeEditor(
             }
             // Center: monitor + timeline
             Column(Modifier.weight(1f).fillMaxHeight()) {
-                Monitor(doc, colors, lang, Modifier.fillMaxWidth().weight(0.55f))
-                TransportBar(doc, colors, onDispatch)
+                Monitor(doc, colors, lang, Modifier.fillMaxWidth().weight(0.55f), previewBitmap)
+                TransportBar(doc, colors, onDispatch, onStep)
                 TimelineStrip(doc, colors, Modifier.fillMaxWidth().weight(0.45f), onDispatch)
             }
             // Right inspector / active panel
@@ -356,7 +361,9 @@ private fun EditorTopBar(
     colors: VyntaraColors,
     lang: AppLanguage,
     onDispatch: (EditorAction) -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onExport: () -> Unit = {},
+    exportLabel: String? = null
 ) {
     TopAppBar(
         title = {
@@ -401,15 +408,12 @@ private fun EditorTopBar(
                 Icon(Icons.Outlined.GridOn, null, tint = if (doc.showGrid) colors.primary else colors.muted)
             }
             Text(
-                if (lang == AppLanguage.ENGLISH) "Export" else "Exportar",
+                exportLabel ?: if (lang == AppLanguage.ENGLISH) "Export" else "Exportar",
                 color = colors.primary,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 14.sp,
                 modifier = Modifier
-                    .clickable {
-                        // Encoder not implemented — honest mark
-                        onDispatch(EditorAction.MarkSaved)
-                    }
+                    .clickable(onClick = onExport)
                     .padding(horizontal = 12.dp, vertical = 10.dp)
             )
         },
@@ -422,7 +426,8 @@ private fun Monitor(
     doc: EditorDocument,
     colors: VyntaraColors,
     lang: AppLanguage,
-    modifier: Modifier
+    modifier: Modifier,
+    previewBitmap: android.graphics.Bitmap? = null
 ) {
     Box(modifier.padding(8.dp), contentAlignment = Alignment.Center) {
         val ratio = doc.width.toFloat() / doc.height.toFloat()
@@ -445,7 +450,30 @@ private fun Monitor(
                 }
             }
             val mediaClips = doc.clips.filter { it.type != LayerType.SOLID && it.visible }
-            if (mediaClips.isEmpty()) {
+            if (previewBitmap != null) {
+                Image(
+                    bitmap = previewBitmap.asImageBitmap(),
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+                val active = mediaClips.filter {
+                    doc.playheadSec >= it.startSec && doc.playheadSec < it.endSec
+                }
+                if (active.any { it.smartBlur || it.effects.any { e -> e.enabled } }) {
+                    Text(
+                        if (lang == AppLanguage.ENGLISH) "Effects in model (GPU pending)"
+                        else "Efectos en modelo (GPU pendiente)",
+                        color = colors.secondary,
+                        fontSize = 10.sp,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(6.dp)
+                            .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            } else if (mediaClips.isEmpty()) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(Icons.Outlined.FileUpload, null, tint = colors.muted, modifier = Modifier.size(36.dp))
                     Spacer(Modifier.height(8.dp))
@@ -462,7 +490,6 @@ private fun Monitor(
                     )
                 }
             } else {
-                // Honest: no pixel decode yet — show clip identity at playhead
                 val active = mediaClips.filter {
                     doc.playheadSec >= it.startSec && doc.playheadSec < it.endSec
                 }
@@ -472,35 +499,38 @@ private fun Monitor(
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium
                 )
-                if (active.any { it.smartBlur || it.effects.any { e -> e.enabled } }) {
-                    Text(
-                        if (lang == AppLanguage.ENGLISH) "Effects on (GPU pending)"
-                        else "Efectos activos (GPU pendiente)",
-                        color = colors.secondary,
-                        fontSize = 11.sp,
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp)
-                    )
-                }
+                Text(
+                    if (lang == AppLanguage.ENGLISH) "Decoding frame…" else "Decodificando fotograma…",
+                    color = colors.muted,
+                    fontSize = 11.sp,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp)
+                )
             }
         }
     }
 }
 
 @Composable
-private fun TransportBar(doc: EditorDocument, colors: VyntaraColors, onDispatch: (EditorAction) -> Unit) {
+private fun TransportBar(doc: EditorDocument, colors: VyntaraColors, onDispatch: (EditorAction) -> Unit, onStep: (Int) -> Unit = {}) {
     Row(
         Modifier.fillMaxWidth().background(colors.surface).padding(horizontal = 4.dp, vertical = 2.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
         IconButton(onClick = { onDispatch(EditorAction.SetPlayhead(0f)) }) {
+            Icon(Icons.Outlined.SkipPrevious, null, tint = colors.muted, modifier = Modifier.size(20.dp))
+        }
+        IconButton(onClick = { onStep(-1) }) {
             Icon(Icons.Outlined.SkipPrevious, null, tint = colors.text)
         }
         IconButton(onClick = { onDispatch(EditorAction.TogglePlay) }) {
             Icon(if (doc.isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow, null, tint = colors.primary, modifier = Modifier.size(32.dp))
         }
-        IconButton(onClick = { onDispatch(EditorAction.SetPlayhead(doc.durationSec)) }) {
+        IconButton(onClick = { onStep(1) }) {
             Icon(Icons.Outlined.SkipNext, null, tint = colors.text)
+        }
+        IconButton(onClick = { onDispatch(EditorAction.SetPlayhead(doc.durationSec)) }) {
+            Icon(Icons.Outlined.SkipNext, null, tint = colors.muted, modifier = Modifier.size(20.dp))
         }
         IconButton(onClick = { onDispatch(EditorAction.ToggleLoop) }) {
             Icon(Icons.Outlined.Loop, null, tint = if (doc.loop) colors.primary else colors.muted)
